@@ -3,9 +3,9 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 import {
+	Badge,
 	Button,
 	Dialog,
-	Empty,
 	Input,
 	Loader,
 	Select,
@@ -30,7 +30,14 @@ export function meta() {
 
 export default function HomeRoute() {
 	const toastManager = useKumoToastManager();
-	const { data: mailboxes = [], refetch: refetchMailboxes, isFetched: mailboxesFetched } = useMailboxes();
+	const {
+		data: mailboxes = [],
+		refetch: refetchMailboxes,
+		isFetched: mailboxesFetched,
+	} = useMailboxes({
+		refetchInterval: 30_000,
+		refetchOnWindowFocus: true,
+	});
 	const createMailbox = useCreateMailbox();
 	const deleteMailbox = useDeleteMailbox();
 
@@ -55,6 +62,7 @@ export default function HomeRoute() {
 		email: string;
 	} | null>(null);
 	const [isDeleting, setIsDeleting] = useState(false);
+	const [isAutoCreatingMailboxes, setIsAutoCreatingMailboxes] = useState(false);
 
 	// Set default domain when config loads
 	useEffect(() => {
@@ -67,7 +75,10 @@ export default function HomeRoute() {
 	const autoCreateDone = useRef(false);
 	useEffect(() => {
 		if (autoCreateDone.current) return;
-		if (emailAddresses.length === 0 || !mailboxesFetched) return;
+		if (emailAddresses.length === 0 || !mailboxesFetched) {
+			setIsAutoCreatingMailboxes(false);
+			return;
+		}
 		const existingEmails = new Set(
 			mailboxes.map((m) => m.email.toLowerCase()),
 		);
@@ -76,16 +87,23 @@ export default function HomeRoute() {
 		);
 		if (toCreate.length === 0) {
 			autoCreateDone.current = true;
+			setIsAutoCreatingMailboxes(false);
 			return;
 		}
 		autoCreateDone.current = true;
+		setIsAutoCreatingMailboxes(true);
 		let cancelled = false;
 		Promise.all(
 			toCreate.map((addr) => {
 				const localPart = addr.split("@")[0] || addr;
 				return api.createMailbox(addr, localPart).catch(() => {});
 			}),
-		).then(() => { if (!cancelled) refetchMailboxes(); });
+		).then(() => {
+			if (!cancelled) {
+				refetchMailboxes();
+				setIsAutoCreatingMailboxes(false);
+			}
+		});
 		return () => { cancelled = true; };
 	}, [emailAddresses, mailboxes, refetchMailboxes]);
 
@@ -129,15 +147,12 @@ export default function HomeRoute() {
 	};
 
 	const isConfigured = emailAddresses.length > 0;
-	const accounts = isConfigured
-		? emailAddresses.map((addr) => ({
-				id: addr,
-				email: addr,
-				name: addr.split("@")[0] || addr,
-			}))
-		: mailboxes;
-
+	const accounts = mailboxes;
 	const isLoading = !configData;
+	const showBootstrapState =
+		isConfigured &&
+		accounts.length === 0 &&
+		(!mailboxesFetched || isAutoCreatingMailboxes);
 
 	return (
 		<div className="min-h-screen bg-kumo-recessed">
@@ -166,47 +181,73 @@ export default function HomeRoute() {
 					<div className="flex justify-center py-20">
 						<Loader size="lg" />
 					</div>
+				) : showBootstrapState ? (
+					<div className="rounded-xl border border-kumo-line bg-kumo-base py-16 px-6">
+						<div className="flex flex-col items-center text-center">
+							<div className="mb-4">
+								<Loader size="lg" />
+							</div>
+							<h3 className="text-base font-semibold text-kumo-default mb-1.5">
+								Setting up mailboxes...
+							</h3>
+							<p className="text-sm text-kumo-subtle max-w-sm">
+								Configured email addresses are being initialized and will appear here shortly.
+							</p>
+						</div>
+					</div>
 				) : accounts.length > 0 ? (
 					<div className="rounded-xl border border-kumo-line bg-kumo-base overflow-hidden">
-						{accounts.map((account, idx) => (
-							<RouterLink
-								key={account.id}
-								to={`/mailbox/${account.id}`}
-								className={`group flex items-center gap-4 px-5 py-4 no-underline transition-colors hover:bg-kumo-tint ${
-									idx > 0 ? "border-t border-kumo-line" : ""
-								}`}
-							>
-								<div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-kumo-fill text-sm font-bold text-kumo-default">
-									{account.name.charAt(0).toUpperCase()}
-								</div>
-								<div className="min-w-0 flex-1">
-									<div className="text-sm font-medium text-kumo-default truncate">
-										{account.name}
+						{accounts.map((account, idx) => {
+							const displayName =
+								account.name && account.name !== account.email
+									? account.name
+									: account.email.split("@")[0] || account.email;
+
+							return (
+								<RouterLink
+									key={account.id}
+									to={`/mailbox/${account.id}`}
+									className={`group flex items-center gap-4 px-5 py-4 no-underline transition-colors hover:bg-kumo-tint ${
+										idx > 0 ? "border-t border-kumo-line" : ""
+									}`}
+								>
+									<div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-kumo-fill text-sm font-bold text-kumo-default">
+										{displayName.charAt(0).toUpperCase()}
 									</div>
-									<div className="text-sm text-kumo-subtle">
-										{account.email}
+									<div className="min-w-0 flex-1">
+										<div className="text-sm font-medium text-kumo-default truncate">
+											{displayName}
+										</div>
+										<div className="text-sm text-kumo-subtle">
+											{account.email}
+										</div>
 									</div>
-								</div>
-								{!isConfigured && (
-									<Button
-										variant="ghost"
-										size="sm"
-										shape="square"
-										icon={<TrashIcon size={16} />}
-										aria-label={`Delete mailbox ${account.email}`}
-										onClick={(e) => {
-											e.preventDefault();
-											e.stopPropagation();
-											setMailboxToDelete({
-												id: account.id,
-												email: account.email,
-											});
-											setIsDeleteOpen(true);
-										}}
-									/>
-								)}
-							</RouterLink>
-						))}
+									{(account.inboxUnreadCount ?? 0) > 0 && (
+										<Badge variant="secondary">
+											{account.inboxUnreadCount}
+										</Badge>
+									)}
+									{!isConfigured && (
+										<Button
+											variant="ghost"
+											size="sm"
+											shape="square"
+											icon={<TrashIcon size={16} />}
+											aria-label={`Delete mailbox ${account.email}`}
+											onClick={(e) => {
+												e.preventDefault();
+												e.stopPropagation();
+												setMailboxToDelete({
+													id: account.id,
+													email: account.email,
+												});
+												setIsDeleteOpen(true);
+											}}
+										/>
+									)}
+								</RouterLink>
+							);
+						})}
 					</div>
 				) : (
 					<div className="rounded-xl border border-kumo-line bg-kumo-base py-16 px-6">

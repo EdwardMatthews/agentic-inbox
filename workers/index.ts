@@ -22,6 +22,9 @@ import type { Env } from "./types";
 import { requireMailbox, type MailboxContext } from "./lib/mailbox";
 
 type AppContext = Context<MailboxContext>;
+type MailboxSummaryStub = {
+	getMailboxSummary: () => Promise<{ inboxUnreadCount: number }>;
+};
 
 // -- Request body schemas (kept for validation) ---------------------
 
@@ -96,7 +99,27 @@ app.get("/api/v1/config", (c) => {
 
 app.get("/api/v1/mailboxes", async (c) => {
 	const allMailboxes = await listMailboxes(c.env.BUCKET);
-	return c.json(allMailboxes.map((m) => ({ ...m, name: m.id })));
+	const mailboxes = await Promise.all(
+		allMailboxes.map(async (mailbox) => {
+			const stub = c.env.MAILBOX.get(c.env.MAILBOX.idFromName(mailbox.id));
+			try {
+				const summary = await (stub as unknown as MailboxSummaryStub).getMailboxSummary();
+				return {
+					...mailbox,
+					name: mailbox.id,
+					inboxUnreadCount: summary.inboxUnreadCount,
+				};
+			} catch (e) {
+				console.error(`Failed to load mailbox summary for ${mailbox.id}:`, (e as Error).message);
+				return {
+					...mailbox,
+					name: mailbox.id,
+					inboxUnreadCount: 0,
+				};
+			}
+		}),
+	);
+	return c.json(mailboxes);
 });
 
 app.post("/api/v1/mailboxes", async (c) => {

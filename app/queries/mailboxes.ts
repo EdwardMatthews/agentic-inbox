@@ -7,10 +7,17 @@ import api from "~/services/api";
 import type { Mailbox } from "~/types";
 import { queryKeys } from "./keys";
 
-export function useMailboxes() {
+interface UseMailboxesOptions {
+	refetchInterval?: number;
+	refetchOnWindowFocus?: boolean;
+}
+
+export function useMailboxes(options?: UseMailboxesOptions) {
 	return useQuery<Mailbox[]>({
 		queryKey: queryKeys.mailboxes.all,
 		queryFn: () => api.listMailboxes() as Promise<Mailbox[]>,
+		refetchInterval: options?.refetchInterval,
+		refetchOnWindowFocus: options?.refetchOnWindowFocus,
 	});
 }
 

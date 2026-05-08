@@ -101,6 +101,7 @@ function useInvalidateEmailData() {
 		qc.invalidateQueries({
 			queryKey: queryKeys.folders.list(mailboxId),
 		});
+		qc.invalidateQueries({ queryKey: queryKeys.mailboxes.all });
 	};
 }
 
@@ -183,6 +184,7 @@ export function useUpdateEmail() {
 			qc.invalidateQueries({
 				queryKey: queryKeys.folders.list(mailboxId),
 			});
+			qc.invalidateQueries({ queryKey: queryKeys.mailboxes.all });
 		},
 	});
 }

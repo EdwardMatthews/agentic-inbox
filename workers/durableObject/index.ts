@@ -99,6 +99,10 @@ interface AttachmentData {
 	disposition?: string | null;
 }
 
+interface MailboxSummary {
+	inboxUnreadCount: number;
+}
+
 export class MailboxDO extends DurableObject<Env> {
 	declare __DURABLE_OBJECT_BRAND: never;
 	db: ReturnType<typeof drizzle>;
@@ -584,6 +588,21 @@ export class MailboxDO extends DurableObject<Env> {
 			.groupBy(schema.folders.id, schema.folders.name)
 			.all();
 		return result;
+	}
+
+	async getMailboxSummary(): Promise<MailboxSummary> {
+		const row = [
+			...this.ctx.storage.sql.exec(
+				`SELECT COUNT(*) as unread
+				 FROM emails
+				 WHERE folder_id = ?1 AND read = 0`,
+				Folders.INBOX,
+			),
+		][0] as { unread: number } | undefined;
+
+		return {
+			inboxUnreadCount: row?.unread ?? 0,
+		};
 	}
 
 	async createFolder(id: string, name: string, is_deletable: number = 1) {
