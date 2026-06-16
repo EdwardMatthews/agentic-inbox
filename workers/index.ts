@@ -17,6 +17,7 @@ import {
 } from "./lib/email-helpers";
 import { SendEmailRequestSchema } from "./lib/schemas";
 import { handleReplyEmail, handleForwardEmail } from "./routes/reply-forward";
+import { operationsRouter } from "./routes/operations";
 import { Folders } from "../shared/folders";
 import type { Env } from "./types";
 import { requireMailbox, type MailboxContext } from "./lib/mailbox";
@@ -92,8 +93,12 @@ app.get("/api/v1/config", (c) => {
 	const domainsRaw = c.env.DOMAINS || "";
 	const domains = domainsRaw.split(",").map((d) => d.trim()).filter(Boolean);
 	const emailAddresses = c.env.EMAIL_ADDRESSES ?? [];
-	return c.json({ domains, emailAddresses });
+	return c.json({ domains, emailAddresses, operationsBaseUrl: c.env.PUBLIC_BASE_URL || null });
 });
+
+// -- Operations -----------------------------------------------------
+
+app.route("/api/v1/operations", operationsRouter);
 
 // -- Mailboxes ------------------------------------------------------
 

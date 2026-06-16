@@ -42,6 +42,7 @@ https://github.com/cloudflare/agentic-inbox/issues/4#issuecomment-4269118513
 - **Built-in AI agent** — Side panel with 9 email tools for reading, searching, drafting, and sending
 - **Auto-draft on new email** — Agent automatically reads inbound emails and generates draft replies, always requiring explicit confirmation before sending
 - **Configurable and persistent** — Custom system prompts per mailbox, persistent chat history, streaming markdown responses, and tool call visibility
+- **Operations console** — Customer management, template management, campaign scheduling, queue-backed batch sending, open/click tracking, unsubscribe handling, and webhook callbacks for email operations
 
 ## Stack
 
@@ -61,6 +62,8 @@ npm run dev
 
 1. Set your domain in `wrangler.jsonc`
 2. Create an R2 bucket named `agentic-inbox`: `wrangler r2 bucket create agentic-inbox`
+3. Set `PUBLIC_BASE_URL` to the public HTTPS origin of your deployed worker so open/click/unsubscribe tracking links resolve correctly
+4. Optionally set `OPERATIONS_WEBHOOK_SECRET` if you want to protect provider receipt ingestion at `/api/v1/operations/provider-receipts`
 
 ### Deploy
 
@@ -81,6 +84,25 @@ Any user who passes the shared Cloudflare Access policy can access all mailboxes
 ## Architecture
 
 ```
+
+## Operations API
+
+The operations subsystem is isolated from the core mailbox UI and mailbox DO storage. It adds a separate global `OperationsDO` for:
+
+- Customers: `/api/v1/operations/customers`
+- Templates: `/api/v1/operations/templates`
+- Campaigns and recipient queueing: `/api/v1/operations/campaigns`
+- Event inspection: `/api/v1/operations/events`
+- Webhook subscriptions: `/api/v1/operations/webhooks`
+- Provider receipts: `POST /api/v1/operations/provider-receipts`
+
+Public tracking endpoints are intentionally exposed without Cloudflare Access because recipients must be able to hit them from email clients:
+
+- Open tracking pixel: `/ops/open/:recipientId.gif`
+- Click tracking redirect: `/ops/click/:recipientId?url=...`
+- Unsubscribe: `/ops/unsubscribe/:token`
+
+These public endpoints only support operations telemetry and unsubscribe flows. The existing mailbox read/send UI and API routes remain behind Cloudflare Access.
 ┌──────────────┐     ┌──────────────────┐     ┌─────────────────┐
 │   Browser    │────>│  Hono Worker     │────>│  MailboxDO      │
 │  React SPA   │     │  (API + SSR)     │     │  (SQLite + R2)  │

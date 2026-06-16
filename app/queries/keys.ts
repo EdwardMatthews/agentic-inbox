@@ -23,5 +23,16 @@ export const queryKeys = {
 		results: (mailboxId: string, query: string, page: number) =>
 			["search", mailboxId, query, page] as const,
 	},
+	operations: {
+		customers: ["operations", "customers"] as const,
+		customer: (customerId: string) => ["operations", "customers", customerId] as const,
+		templates: ["operations", "templates"] as const,
+		template: (templateId: string) => ["operations", "templates", templateId] as const,
+		campaigns: ["operations", "campaigns"] as const,
+		campaign: (campaignId: string) => ["operations", "campaigns", campaignId] as const,
+		recipients: (campaignId: string, page: number) => ["operations", "campaigns", campaignId, "recipients", page] as const,
+		events: (filters: Record<string, string | number | undefined>) => ["operations", "events", filters] as const,
+		webhooks: ["operations", "webhooks"] as const,
+	},
 	config: ["config"] as const,
 };

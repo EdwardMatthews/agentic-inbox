@@ -8,11 +8,14 @@ import { jwtVerify, createRemoteJWKSet } from "jose";
 import { createRequestHandler } from "react-router";
 import { app as apiApp, receiveEmail } from "./index";
 import { EmailMCP } from "./mcp";
+import { OperationsDO } from "./operations";
+import { getOperationsStub } from "./lib/operations";
 import type { Env } from "./types";
 
 export { MailboxDO } from "./durableObject";
 export { EmailAgent } from "./agent";
 export { EmailMCP } from "./mcp";
+export { OperationsDO } from "./operations";
 
 declare module "react-router" {
 	export interface AppLoadContext {
@@ -27,6 +30,13 @@ const requestHandler = createRequestHandler(
 	() => import("virtual:react-router/server-build"),
 	import.meta.env.MODE,
 );
+
+const PUBLIC_OPERATION_PATH_PREFIXES = [
+	"/ops/open/",
+	"/ops/click/",
+	"/ops/unsubscribe/",
+	"/api/v1/operations/provider-receipts",
+];
 
 function getAccessUrls(teamDomain: string) {
 	const certsPath = "/cdn-cgi/access/certs";
@@ -44,6 +54,10 @@ const app = new Hono<{ Bindings: Env }>();
 
 // Cloudflare Access JWT validation middleware (production only)
 app.use("*", async (c, next) => {
+	if (PUBLIC_OPERATION_PATH_PREFIXES.some((prefix) => c.req.path.startsWith(prefix))) {
+		return next();
+	}
+
 	// Skip validation in development
 	if (import.meta.env.DEV) {
 		return next();
@@ -78,6 +92,41 @@ app.use("*", async (c, next) => {
 	// Authorization model note: once a teammate passes the shared Cloudflare
 	// Access policy, they can access all mailboxes in this app by design.
 	return next();
+});
+
+app.get("/ops/open/:recipientId.gif", async (c) => {
+	const stub = getOperationsStub(c.env);
+	const recipientId = c.req.param("recipientId");
+	if (!recipientId) return c.text("Missing recipient id", 400);
+	await stub.trackOpen(recipientId);
+	const gifBytes = await stub.getPixelResponse();
+	return new Response(gifBytes, {
+		headers: {
+			"Content-Type": "image/gif",
+			"Cache-Control": "no-store, no-cache, must-revalidate, private",
+		},
+	});
+});
+
+app.get("/ops/click/:recipientId", async (c) => {
+	const targetUrl = c.req.query("url");
+	if (!targetUrl) {
+		return c.text("Missing target URL", 400);
+	}
+	const stub = getOperationsStub(c.env);
+	await stub.trackClick(c.req.param("recipientId"), targetUrl);
+	return c.redirect(targetUrl, 302);
+});
+
+app.get("/ops/unsubscribe/:token", async (c) => {
+	const stub = getOperationsStub(c.env);
+	const token = c.req.param("token");
+	if (!token) return c.text("Missing unsubscribe token", 400);
+	const result = await stub.unsubscribeByToken(token, c.req.query("customerId"));
+	if (!result.unsubscribed || !result.customer) {
+		return c.html(`<!doctype html><html><body style="font-family: sans-serif; padding: 2rem;"><h1>Unsubscribe link invalid</h1><p>This link is invalid or has already expired.</p></body></html>`, 404);
+	}
+	return c.html(`<!doctype html><html><body style="font-family: sans-serif; padding: 2rem;"><h1>You're unsubscribed</h1><p>${result.customer.email} will no longer receive operational campaigns from this inbox.</p></body></html>`);
 });
 
 // MCP server endpoint — used by AI coding tools (ProtoAgent, Claude Code, Cursor, etc.)

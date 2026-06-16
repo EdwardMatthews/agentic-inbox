@@ -3,6 +3,14 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 import type { Email, Folder, Mailbox } from "~/types";
+import type {
+	OperationsCampaign,
+	OperationsCustomer,
+	OperationsEvent,
+	OperationsRecipient,
+	OperationsTemplate,
+	OperationsWebhook,
+} from "~/types/operations";
 
 const REQUEST_TIMEOUT_MS = 30_000;
 
@@ -97,7 +105,7 @@ interface EmailListResponse {
 const api = {
 	// Config
 	getConfig: () =>
-		get<{ domains: string[]; emailAddresses: string[] }>("/api/v1/config"),
+		get<{ domains: string[]; emailAddresses: string[]; operationsBaseUrl?: string | null }>("/api/v1/config"),
 
 	// Mailboxes
 	listMailboxes: () => get<Mailbox[]>("/api/v1/mailboxes"),
@@ -160,6 +168,60 @@ const api = {
 	// Search
 	searchEmails: (mailboxId: string, params: Record<string, string>) =>
 		get<EmailListResponse | Email[]>(`/api/v1/mailboxes/${mailboxId}/search`, { params }),
+
+	// Operations: Customers
+	listOperationsCustomers: (params: Record<string, string>) =>
+		get<{ customers: OperationsCustomer[]; totalCount: number }>("/api/v1/operations/customers", { params }),
+	createOperationsCustomer: (body: unknown) =>
+		post<OperationsCustomer>("/api/v1/operations/customers", body),
+	updateOperationsCustomer: (customerId: string, body: unknown) =>
+		put<OperationsCustomer>(`/api/v1/operations/customers/${customerId}`, body),
+	deleteOperationsCustomer: (customerId: string) =>
+		del<void>(`/api/v1/operations/customers/${customerId}`),
+
+	// Operations: Templates
+	listOperationsTemplates: () =>
+		get<OperationsTemplate[]>("/api/v1/operations/templates"),
+	createOperationsTemplate: (body: unknown) =>
+		post<OperationsTemplate>("/api/v1/operations/templates", body),
+	updateOperationsTemplate: (templateId: string, body: unknown) =>
+		put<OperationsTemplate>(`/api/v1/operations/templates/${templateId}`, body),
+	deleteOperationsTemplate: (templateId: string) =>
+		del<void>(`/api/v1/operations/templates/${templateId}`),
+	previewOperationsTemplate: (body: unknown) =>
+		post<{ subject: string; html: string; text: string }>("/api/v1/operations/templates/preview", body),
+
+	// Operations: Campaigns
+	listOperationsCampaigns: () =>
+		get<OperationsCampaign[]>("/api/v1/operations/campaigns"),
+	createOperationsCampaign: (body: unknown) =>
+		post<OperationsCampaign>("/api/v1/operations/campaigns", body),
+	updateOperationsCampaign: (campaignId: string, body: unknown) =>
+		put<OperationsCampaign>(`/api/v1/operations/campaigns/${campaignId}`, body),
+	startOperationsCampaign: (campaignId: string, body?: unknown) =>
+		post<OperationsCampaign>(`/api/v1/operations/campaigns/${campaignId}/start`, body),
+	pauseOperationsCampaign: (campaignId: string) =>
+		post<OperationsCampaign>(`/api/v1/operations/campaigns/${campaignId}/pause`),
+	resumeOperationsCampaign: (campaignId: string) =>
+		post<OperationsCampaign>(`/api/v1/operations/campaigns/${campaignId}/resume`),
+	cancelOperationsCampaign: (campaignId: string) =>
+		post<OperationsCampaign>(`/api/v1/operations/campaigns/${campaignId}/cancel`),
+	listOperationsRecipients: (campaignId: string, params: Record<string, string>) =>
+		get<{ recipients: OperationsRecipient[]; totalCount: number }>(`/api/v1/operations/campaigns/${campaignId}/recipients`, { params }),
+
+	// Operations: Events
+	listOperationsEvents: (params: Record<string, string>) =>
+		get<{ events: OperationsEvent[]; totalCount: number }>("/api/v1/operations/events", { params }),
+
+	// Operations: Webhooks
+	listOperationsWebhooks: () =>
+		get<OperationsWebhook[]>("/api/v1/operations/webhooks"),
+	createOperationsWebhook: (body: unknown) =>
+		post<OperationsWebhook[]>("/api/v1/operations/webhooks", body),
+	updateOperationsWebhook: (webhookId: string, body: unknown) =>
+		put<OperationsWebhook[]>(`/api/v1/operations/webhooks/${webhookId}`, body),
+	deleteOperationsWebhook: (webhookId: string) =>
+		del<void>(`/api/v1/operations/webhooks/${webhookId}`),
 };
 
 export default api;

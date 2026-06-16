@@ -10,6 +10,14 @@ import {
 
 export default [
 	index("routes/home.tsx"),
+	route("operations", "routes/operations.tsx", [
+		index("routes/operations-index.tsx"),
+		route("campaigns", "routes/operations-campaigns.tsx"),
+		route("customers", "routes/operations-customers.tsx"),
+		route("templates", "routes/operations-templates.tsx"),
+		route("events", "routes/operations-events.tsx"),
+		route("webhooks", "routes/operations-webhooks.tsx"),
+	]),
 	route("mailbox/:mailboxId", "routes/mailbox.tsx", [
 		index("routes/mailbox-index.tsx"),
 		route("emails/:folder", "routes/email-list.tsx"),
