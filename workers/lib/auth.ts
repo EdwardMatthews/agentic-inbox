@@ -3,7 +3,9 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 export const SESSION_COOKIE_NAME = "agentic_inbox_session";
-const PASSWORD_ITERATIONS = 310_000;
+// Cloudflare's Web Crypto PBKDF2 implementation rejects iteration counts
+// above 100000, so keep the default at the platform-supported ceiling.
+const PASSWORD_ITERATIONS = 100_000;
 const PASSWORD_HASH_LENGTH = 32;
 const PASSWORD_HASH_PREFIX = "pbkdf2_sha256";
 
