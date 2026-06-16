@@ -37,6 +37,7 @@ type PublicOperationsStub = {
 	getPixelResponse: () => Promise<Uint8Array>;
 	trackClick: (recipientId: string, targetUrl: string) => Promise<unknown>;
 	unsubscribeByToken: (token: string, customerId?: string) => Promise<{ unsubscribed?: boolean; customer?: { email: string } | null }>;
+	countUsers: () => Promise<number>;
 };
 
 function publicOperationsStub(env: Env): PublicOperationsStub {
@@ -83,6 +84,17 @@ app.get("/ops/unsubscribe/:token", async (c) => {
 		return c.html(`<!doctype html><html><body style="font-family: sans-serif; padding: 2rem;"><h1>Unsubscribe link invalid</h1><p>This link is invalid or has already expired.</p></body></html>`, 404);
 	}
 	return c.html(`<!doctype html><html><body style="font-family: sans-serif; padding: 2rem;"><h1>You're unsubscribed</h1><p>${unsubscribedCustomer.email} will no longer receive operational campaigns from this inbox.</p></body></html>`);
+});
+
+app.get("/setup-admin", async (c) => {
+	const stub = publicOperationsStub(c.env);
+	const bootstrapRequired = (await stub.countUsers()) === 0;
+	if (!bootstrapRequired) {
+		return c.redirect("/login", 302);
+	}
+	return requestHandler(c.req.raw, {
+		cloudflare: { env: c.env, ctx: c.executionCtx as ExecutionContext },
+	});
 });
 
 // MCP server endpoint — used by AI coding tools (ProtoAgent, Claude Code, Cursor, etc.)

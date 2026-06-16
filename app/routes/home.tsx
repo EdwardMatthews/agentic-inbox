@@ -10,9 +10,10 @@ import {
 	Loader,
 	Select,
 	Text,
+	Tooltip,
 	useKumoToastManager,
 } from "@cloudflare/kumo";
-import { EnvelopeIcon, PlusIcon, TrashIcon } from "@phosphor-icons/react";
+import { CaretDownIcon, CaretRightIcon, EnvelopeIcon, GearSixIcon, BookOpenIcon, RobotIcon, SignOutIcon, PlusIcon, TrashIcon } from "@phosphor-icons/react";
 import { useQuery } from "@tanstack/react-query";
 import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Link as RouterLink, useNavigate } from "react-router";
@@ -68,6 +69,7 @@ export default function HomeRoute() {
 	const [isDeleting, setIsDeleting] = useState(false);
 	const [isAutoCreatingMailboxes, setIsAutoCreatingMailboxes] = useState(false);
 	const [selectedTag, setSelectedTag] = useState("");
+	const [expandedDomains, setExpandedDomains] = useState<string[]>([]);
 	const isAdmin = sessionData?.user?.globalRole === "admin";
 
 	// Set default domain when config loads
@@ -206,35 +208,47 @@ export default function HomeRoute() {
 						<div className="flex items-center gap-2">
 							{isAdmin && (
 								<>
-									<Button
-										variant="secondary"
-										onClick={() => navigate("/settings")}
-									>
-										Global Settings
-									</Button>
-									<Button
-										variant="secondary"
-										onClick={() => navigate("/api-docs")}
-									>
-										API Docs
-									</Button>
-									<Button
-										variant="secondary"
-										onClick={() => navigate("/operations")}
-									>
-										Operations
-									</Button>
+									<Tooltip content="Global Settings" side="bottom" asChild>
+										<Button
+											variant="secondary"
+											shape="square"
+											icon={<GearSixIcon size={18} />}
+											onClick={() => navigate("/settings")}
+											aria-label="Global Settings"
+										/>
+									</Tooltip>
+									<Tooltip content="API Docs" side="bottom" asChild>
+										<Button
+											variant="secondary"
+											shape="square"
+											icon={<BookOpenIcon size={18} />}
+											onClick={() => navigate("/api-docs")}
+											aria-label="API Docs"
+										/>
+									</Tooltip>
+									<Tooltip content="Operations" side="bottom" asChild>
+										<Button
+											variant="secondary"
+											shape="square"
+											icon={<RobotIcon size={18} />}
+											onClick={() => navigate("/operations")}
+											aria-label="Operations"
+										/>
+									</Tooltip>
 								</>
 							)}
-							<Button
-								variant="ghost"
-								onClick={async () => {
-									await logout.mutateAsync();
-									navigate("/login");
-								}}
-							>
-								Log out
-							</Button>
+							<Tooltip content="Log out" side="bottom" asChild>
+								<Button
+									variant="ghost"
+									shape="square"
+									icon={<SignOutIcon size={18} />}
+									onClick={async () => {
+										await logout.mutateAsync();
+										navigate("/login");
+									}}
+									aria-label="Log out"
+								/>
+							</Tooltip>
 							{isAdmin && !isConfigured && (
 								<Button
 									variant="primary"
@@ -291,15 +305,44 @@ export default function HomeRoute() {
 					<div className="space-y-6">
 						{groupedAccounts.map((group) => (
 							<div key={group.domain} className="rounded-xl border border-kumo-line bg-kumo-base overflow-hidden">
-								<div className="flex items-center justify-between px-5 py-3 border-b border-kumo-line bg-kumo-fill/20">
-									<div>
-										<div className="text-sm font-semibold text-kumo-default">{group.domain}</div>
-										<div className="text-xs text-kumo-subtle mt-0.5">
-											{group.mailboxes.length} mailbox{group.mailboxes.length !== 1 ? "es" : ""}
-										</div>
-									</div>
-								</div>
-								{group.mailboxes.map((account, idx) => {
+								{(() => {
+									const isExpanded = expandedDomains.includes(group.domain);
+									const totalUnread = group.mailboxes.reduce(
+										(sum, mailbox) => sum + (mailbox.inboxUnreadCount ?? 0),
+										0,
+									);
+
+									return (
+										<>
+											<button
+												type="button"
+												onClick={() =>
+													setExpandedDomains((prev) =>
+														prev.includes(group.domain)
+															? prev.filter((domain) => domain !== group.domain)
+															: [...prev, group.domain],
+													)
+												}
+												className={`flex w-full items-center justify-between px-5 py-3 text-left bg-kumo-fill/20 hover:bg-kumo-fill/30 transition-colors ${isExpanded ? "border-b border-kumo-line" : ""}`}
+											>
+												<div className="flex items-center gap-3 min-w-0">
+													<span className="text-kumo-subtle shrink-0">
+														{isExpanded ? <CaretDownIcon size={16} /> : <CaretRightIcon size={16} />}
+													</span>
+													<div>
+														<div className="text-sm font-semibold text-kumo-default">{group.domain}</div>
+														<div className="text-xs text-kumo-subtle mt-0.5">
+															{group.mailboxes.length} mailbox{group.mailboxes.length !== 1 ? "es" : ""}
+														</div>
+													</div>
+												</div>
+												{totalUnread > 0 && (
+													<Badge variant="secondary">
+														{totalUnread}
+													</Badge>
+												)}
+											</button>
+											{isExpanded && group.mailboxes.map((account, idx) => {
 									const displayName =
 										account.name && account.name !== account.email
 											? account.name
@@ -359,7 +402,10 @@ export default function HomeRoute() {
 											)}
 										</RouterLink>
 									);
-								})}
+											})}
+										</>
+									);
+								})()}
 							</div>
 						))}
 					</div>
