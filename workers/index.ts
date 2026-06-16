@@ -16,6 +16,8 @@ import {
 	listMailboxes,
 } from "./lib/email-helpers";
 import { SendEmailRequestSchema } from "./lib/schemas";
+import { globalSettingsRouter } from "./routes/global-settings";
+import { transactionalRouter } from "./routes/transactional";
 import { handleReplyEmail, handleForwardEmail } from "./routes/reply-forward";
 import { operationsRouter } from "./routes/operations";
 import { Folders } from "../shared/folders";
@@ -99,6 +101,8 @@ app.get("/api/v1/config", (c) => {
 // -- Operations -----------------------------------------------------
 
 app.route("/api/v1/operations", operationsRouter);
+app.route("/api/v1/settings", globalSettingsRouter);
+app.route("/api/v1/transactional", transactionalRouter);
 
 // -- Mailboxes ------------------------------------------------------
 

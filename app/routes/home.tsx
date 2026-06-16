@@ -164,6 +164,12 @@ export default function HomeRoute() {
 						<div className="flex items-center gap-2">
 							<Button
 								variant="secondary"
+								onClick={() => navigate("/settings")}
+							>
+								Global Settings
+							</Button>
+							<Button
+								variant="secondary"
 								onClick={() => navigate("/operations")}
 							>
 								Operations

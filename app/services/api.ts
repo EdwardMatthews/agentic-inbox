@@ -4,6 +4,8 @@
 
 import type { Email, Folder, Mailbox } from "~/types";
 import type {
+	ManagedApiKey,
+	ManagedApiKeyCreateResult,
 	OperationsCampaign,
 	OperationsCustomer,
 	OperationsEvent,
@@ -222,6 +224,14 @@ const api = {
 		put<OperationsWebhook[]>(`/api/v1/operations/webhooks/${webhookId}`, body),
 	deleteOperationsWebhook: (webhookId: string) =>
 		del<void>(`/api/v1/operations/webhooks/${webhookId}`),
+
+	// Global settings: API keys
+	listApiKeys: () =>
+		get<ManagedApiKey[]>("/api/v1/settings/api-keys"),
+	createApiKey: (body: unknown) =>
+		post<ManagedApiKeyCreateResult>("/api/v1/settings/api-keys", body),
+	revokeApiKey: (apiKeyId: string) =>
+		del<void>(`/api/v1/settings/api-keys/${apiKeyId}`),
 };
 
 export default api;

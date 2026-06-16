@@ -66,15 +66,25 @@ export default function OperationsRoute() {
 				</div>
 
 				<div className="mt-auto p-3 border-t border-kumo-line">
-					<Button
-						variant="secondary"
-						size="sm"
-						className="w-full"
-						icon={<HouseIcon size={16} />}
-						onClick={() => navigate("/")}
-					>
-						Back to Mailboxes
-					</Button>
+					<div className="space-y-2">
+						<Button
+							variant="secondary"
+							size="sm"
+							className="w-full"
+							onClick={() => navigate("/settings")}
+						>
+							Global Settings
+						</Button>
+						<Button
+							variant="secondary"
+							size="sm"
+							className="w-full"
+							icon={<HouseIcon size={16} />}
+							onClick={() => navigate("/")}
+						>
+							Back to Mailboxes
+						</Button>
+					</div>
 				</div>
 			</aside>
 

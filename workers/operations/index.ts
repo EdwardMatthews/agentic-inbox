@@ -4,6 +4,7 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { sendEmail } from "../email-sender";
+import { storeAttachments } from "../lib/attachments";
 import { generateMessageId } from "../lib/email-helpers";
 import { Folders } from "../../shared/folders";
 import type { Env } from "../types";
@@ -106,6 +107,45 @@ export interface OperationsWebhook {
 	enabled: boolean;
 	created_at: string;
 	updated_at: string;
+}
+
+export interface OperationsApiKey {
+	id: string;
+	name: string;
+	key_prefix: string;
+	scopes: string[];
+	allowed_mailboxes: string[];
+	last_used_at: string | null;
+	created_at: string;
+	revoked_at: string | null;
+}
+
+export interface OperationsApiKeyCreateResult {
+	apiKey: string;
+	record: OperationsApiKey;
+}
+
+export interface TransactionalSendPayload {
+	mailboxId: string;
+	to: string | string[];
+	cc?: string | string[];
+	bcc?: string | string[];
+	replyTo?: string | { email: string; name?: string };
+	fromName?: string;
+	subject?: string;
+	html?: string;
+	text?: string;
+	templateId?: string;
+	variables?: Record<string, JsonValue>;
+	trackOpens?: boolean;
+	trackClicks?: boolean;
+	attachments?: {
+		content: string;
+		filename: string;
+		type: string;
+		disposition: "attachment" | "inline";
+		contentId?: string;
+	}[];
 }
 
 const ONE_PIXEL_GIF = Uint8Array.from(
@@ -211,6 +251,18 @@ const operationsMigrations: Migration[] = [
 				updated_at TEXT NOT NULL
 			);
 
+			CREATE TABLE api_keys (
+				id TEXT PRIMARY KEY,
+				name TEXT NOT NULL,
+				key_prefix TEXT NOT NULL,
+				key_hash TEXT NOT NULL UNIQUE,
+				scopes_json TEXT NOT NULL DEFAULT '[]',
+				allowed_mailboxes_json TEXT NOT NULL DEFAULT '[]',
+				last_used_at TEXT,
+				created_at TEXT NOT NULL,
+				revoked_at TEXT
+			);
+
 			CREATE INDEX idx_customers_status ON customers(status);
 			CREATE INDEX idx_campaigns_status ON campaigns(status);
 			CREATE INDEX idx_campaigns_scheduled_at ON campaigns(scheduled_at);
@@ -218,6 +270,25 @@ const operationsMigrations: Migration[] = [
 			CREATE INDEX idx_recipients_status_schedule ON campaign_recipients(status, scheduled_at);
 			CREATE INDEX idx_events_campaign ON events(campaign_id);
 			CREATE INDEX idx_events_created ON events(created_at DESC);
+			CREATE INDEX idx_api_keys_revoked ON api_keys(revoked_at);
+		`,
+	},
+	{
+		name: "2_operations_api_keys",
+		sql: `
+			CREATE TABLE IF NOT EXISTS api_keys (
+				id TEXT PRIMARY KEY,
+				name TEXT NOT NULL,
+				key_prefix TEXT NOT NULL,
+				key_hash TEXT NOT NULL UNIQUE,
+				scopes_json TEXT NOT NULL DEFAULT '[]',
+				allowed_mailboxes_json TEXT NOT NULL DEFAULT '[]',
+				last_used_at TEXT,
+				created_at TEXT NOT NULL,
+				revoked_at TEXT
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_api_keys_revoked ON api_keys(revoked_at);
 		`,
 	},
 ];
@@ -242,6 +313,23 @@ function normalizeTags(tags?: string[] | null): string[] {
 function cleanBaseUrl(url: string | undefined): string | null {
 	if (!url?.trim()) return null;
 	return url.replace(/\/+$/, "");
+}
+
+function toHex(bytes: Uint8Array): string {
+	return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function sha256(input: string): Promise<string> {
+	const data = new TextEncoder().encode(input);
+	const digest = await crypto.subtle.digest("SHA-256", data);
+	return toHex(new Uint8Array(digest));
+}
+
+function randomToken(byteLength = 32): string {
+	const bytes = crypto.getRandomValues(new Uint8Array(byteLength));
+	let binary = "";
+	for (const byte of bytes) binary += String.fromCharCode(byte);
+	return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
 function renderPathValue(path: string, source: Record<string, unknown>): string {
@@ -417,6 +505,19 @@ export class OperationsDO extends DurableObject<Env> {
 			enabled: Boolean(row.enabled),
 			created_at: String(row.created_at),
 			updated_at: String(row.updated_at),
+		};
+	}
+
+	private mapApiKey(row: Record<string, unknown>): OperationsApiKey {
+		return {
+			id: String(row.id),
+			name: String(row.name),
+			key_prefix: String(row.key_prefix),
+			scopes: parseJson<string[]>(String(row.scopes_json || "[]"), []),
+			allowed_mailboxes: parseJson<string[]>(String(row.allowed_mailboxes_json || "[]"), []),
+			last_used_at: row.last_used_at ? String(row.last_used_at) : null,
+			created_at: String(row.created_at),
+			revoked_at: row.revoked_at ? String(row.revoked_at) : null,
 		};
 	}
 
@@ -655,6 +756,64 @@ export class OperationsDO extends DurableObject<Env> {
 			}
 			if (campaign.track_opens) {
 				html = appendTrackingPixel(html, baseUrl, recipientId);
+			}
+		}
+
+		return { subject, html, text };
+	}
+
+	private buildTransactionalContent(input: {
+		mailboxId: string;
+		template: OperationsTemplate | null;
+		variables?: Record<string, JsonValue>;
+		customer?: {
+			email?: string;
+			name?: string;
+			firstName?: string;
+			lastName?: string;
+		};
+		subject?: string;
+		html?: string;
+		text?: string;
+		trackOpens?: boolean;
+		trackClicks?: boolean;
+		recipientToken?: string;
+	}) {
+		const baseUrl = cleanBaseUrl(this.env.PUBLIC_BASE_URL);
+		const mailboxDisplay = {
+			email: input.mailboxId,
+			name: input.mailboxId.split("@")[0] || input.mailboxId,
+		};
+		const customer = {
+			email: input.customer?.email || "",
+			name: input.customer?.name || input.customer?.email || "",
+			first_name: input.customer?.firstName || "",
+			last_name: input.customer?.lastName || "",
+		};
+		const data = {
+			customer,
+			mailbox: mailboxDisplay,
+			variables: input.variables || {},
+		};
+
+		const subjectTemplate = input.subject ?? input.template?.subject_template ?? "";
+		const htmlTemplate = input.html ?? input.template?.html_template ?? "";
+		const textTemplate = input.text ?? input.template?.text_template ?? "";
+
+		const subject = renderTemplateString(subjectTemplate, data);
+		let html = renderTemplateString(htmlTemplate, data);
+		let text = renderTemplateString(textTemplate, data);
+
+		if (!text && htmlTemplate) {
+			text = renderTemplateString(htmlTemplate.replace(/<[^>]+>/g, " "), data);
+		}
+
+		if (input.recipientToken && baseUrl && html) {
+			if (input.trackClicks) {
+				html = rewriteTrackedLinks(html, baseUrl, input.recipientToken);
+			}
+			if (input.trackOpens) {
+				html = appendTrackingPixel(html, baseUrl, input.recipientToken);
 			}
 		}
 
@@ -1453,6 +1612,237 @@ export class OperationsDO extends DurableObject<Env> {
 		return this.rows<Record<string, unknown>>(
 			`SELECT * FROM webhook_subscriptions ORDER BY created_at DESC`,
 		).map((row) => this.mapWebhook(row));
+	}
+
+	async listApiKeys() {
+		return this.rows<Record<string, unknown>>(
+			`SELECT id, name, key_prefix, scopes_json, allowed_mailboxes_json, last_used_at, created_at, revoked_at
+			 FROM api_keys
+			 ORDER BY created_at DESC`,
+		).map((row) => this.mapApiKey(row));
+	}
+
+	async createApiKey(input: {
+		name: string;
+		scopes?: string[];
+		allowedMailboxes?: string[];
+	}) : Promise<OperationsApiKeyCreateResult> {
+		const id = crypto.randomUUID();
+		const createdAt = nowIso();
+		const secret = randomToken(32);
+		const rawKey = `aik_live_${id.replace(/-/g, "")}_${secret}`;
+		const keyHash = await sha256(rawKey);
+		const keyPrefix = rawKey.slice(0, 18);
+		this.run(
+			`INSERT INTO api_keys (
+				id, name, key_prefix, key_hash, scopes_json, allowed_mailboxes_json, last_used_at, created_at, revoked_at
+			) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, NULL)`,
+			id,
+			input.name.trim(),
+			keyPrefix,
+			keyHash,
+			JSON.stringify((input.scopes && input.scopes.length > 0 ? input.scopes : ["transactional:send"])),
+			JSON.stringify(normalizeTags(input.allowedMailboxes)),
+			createdAt,
+		);
+		const record = this.row<Record<string, unknown>>(
+			`SELECT id, name, key_prefix, scopes_json, allowed_mailboxes_json, last_used_at, created_at, revoked_at
+			 FROM api_keys WHERE id = ?1`,
+			id,
+		);
+		if (!record) {
+			throw new Error("Failed to create API key");
+		}
+		return {
+			apiKey: rawKey,
+			record: this.mapApiKey(record),
+		};
+	}
+
+	async revokeApiKey(apiKeyId: string) {
+		this.run(
+			`UPDATE api_keys SET revoked_at = ?2 WHERE id = ?1 AND revoked_at IS NULL`,
+			apiKeyId,
+			nowIso(),
+		);
+		return { revoked: true };
+	}
+
+	async verifyApiKey(rawKey: string, requiredScope: string, mailboxId?: string) {
+		const hash = await sha256(rawKey);
+		const row = this.row<Record<string, unknown>>(
+			`SELECT id, name, key_prefix, scopes_json, allowed_mailboxes_json, last_used_at, created_at, revoked_at
+			 FROM api_keys
+			 WHERE key_hash = ?1 AND revoked_at IS NULL`,
+			hash,
+		);
+		if (!row) return null;
+		const apiKey = this.mapApiKey(row);
+		if (!apiKey.scopes.includes(requiredScope)) return null;
+		if (mailboxId && apiKey.allowed_mailboxes.length > 0 && !apiKey.allowed_mailboxes.includes(mailboxId)) {
+			return null;
+		}
+		this.run(
+			`UPDATE api_keys SET last_used_at = ?2 WHERE id = ?1`,
+			apiKey.id,
+			nowIso(),
+		);
+		return apiKey;
+	}
+
+	async sendTransactionalEmail(rawApiKey: string, payload: TransactionalSendPayload) {
+		const apiKey = await this.verifyApiKey(rawApiKey, "transactional:send", payload.mailboxId);
+		if (!apiKey) {
+			throw new Error("Invalid or unauthorized API key");
+		}
+
+		await this.ensureMailboxExists(payload.mailboxId);
+		if (!payload.templateId && !payload.subject) {
+			throw new Error("Transactional email requires either a templateId or a subject");
+		}
+		if (!payload.templateId && !payload.html && !payload.text) {
+			throw new Error("Transactional email requires either a templateId or HTML/text content");
+		}
+
+		const mailboxStub = this.env.MAILBOX.get(this.env.MAILBOX.idFromName(payload.mailboxId));
+		const rateLimitError = await (mailboxStub as unknown as {
+			checkSendRateLimit: () => Promise<string | null>;
+		}).checkSendRateLimit();
+		if (rateLimitError) {
+			throw new Error(rateLimitError);
+		}
+
+		const template = payload.templateId ? await this.getTemplate(payload.templateId) : null;
+		if (payload.templateId && !template) {
+			throw new Error("Template not found");
+		}
+
+		const mailboxConfig = await this.env.BUCKET.get(`mailboxes/${payload.mailboxId}.json`);
+		const mailboxSettings: Record<string, unknown> = mailboxConfig
+			? await mailboxConfig.json<Record<string, unknown>>().catch(() => ({}))
+			: {};
+		const resolvedFromName =
+			payload.fromName?.trim() ||
+			(typeof mailboxSettings.fromName === "string" && mailboxSettings.fromName.trim()
+				? mailboxSettings.fromName.trim()
+				: payload.mailboxId.split("@")[0]);
+
+		const primaryRecipient = Array.isArray(payload.to) ? payload.to[0] : payload.to;
+		const recipientToken = crypto.randomUUID();
+		const rendered = this.buildTransactionalContent({
+			mailboxId: payload.mailboxId,
+			template,
+			variables: payload.variables,
+			customer: {
+				email: primaryRecipient,
+				name: typeof payload.variables?.customerName === "string" ? String(payload.variables.customerName) : primaryRecipient,
+				firstName: typeof payload.variables?.firstName === "string" ? String(payload.variables.firstName) : undefined,
+				lastName: typeof payload.variables?.lastName === "string" ? String(payload.variables.lastName) : undefined,
+			},
+			subject: payload.subject,
+			html: payload.html,
+			text: payload.text,
+			trackOpens: payload.trackOpens,
+			trackClicks: payload.trackClicks,
+			recipientToken,
+		});
+
+		const fromDomain = payload.mailboxId.split("@")[1];
+		if (!fromDomain) {
+			throw new Error(`Invalid mailbox address: ${payload.mailboxId}`);
+		}
+		const { messageId, outgoingMessageId } = generateMessageId(fromDomain);
+		const sentAt = nowIso();
+		const attachmentData = await storeAttachments(this.env.BUCKET, messageId, payload.attachments);
+
+		const sendResult = await sendEmail(this.env.EMAIL, {
+			to: payload.to,
+			cc: payload.cc,
+			bcc: payload.bcc,
+			replyTo: typeof payload.replyTo === "string"
+				? payload.replyTo
+				: payload.replyTo
+					? {
+						email: payload.replyTo.email,
+						name: payload.replyTo.name || payload.replyTo.email,
+					}
+					: undefined,
+			from: resolvedFromName ? { email: payload.mailboxId, name: resolvedFromName } : payload.mailboxId,
+			subject: rendered.subject,
+			html: rendered.html || undefined,
+			text: rendered.text || undefined,
+			attachments: payload.attachments,
+		});
+
+		await (mailboxStub as unknown as {
+			createEmail: (
+				folder: string,
+				email: {
+					id: string;
+					subject: string;
+					sender: string;
+					recipient: string;
+					cc?: string | null;
+					bcc?: string | null;
+					date: string;
+					body: string;
+					in_reply_to: string | null;
+					email_references: string | null;
+					thread_id: string | null;
+					message_id: string | null;
+					raw_headers: string | null;
+				},
+				attachments: unknown[],
+			) => Promise<void>;
+		}).createEmail(
+			Folders.SENT,
+			{
+				id: messageId,
+				subject: rendered.subject,
+				sender: payload.mailboxId.toLowerCase(),
+				recipient: (Array.isArray(payload.to) ? payload.to.join(", ") : payload.to).toLowerCase(),
+				cc: payload.cc ? (Array.isArray(payload.cc) ? payload.cc.join(", ") : payload.cc).toLowerCase() : null,
+				bcc: payload.bcc ? (Array.isArray(payload.bcc) ? payload.bcc.join(", ") : payload.bcc).toLowerCase() : null,
+				date: sentAt,
+				body: rendered.html || rendered.text,
+				in_reply_to: null,
+				email_references: null,
+				thread_id: messageId,
+				message_id: outgoingMessageId,
+				raw_headers: JSON.stringify([
+					{ key: "from", value: resolvedFromName ? `${resolvedFromName} <${payload.mailboxId}>` : payload.mailboxId },
+					{ key: "to", value: Array.isArray(payload.to) ? payload.to.join(", ") : payload.to },
+					...(payload.cc ? [{ key: "cc", value: Array.isArray(payload.cc) ? payload.cc.join(", ") : payload.cc }] : []),
+					...(payload.bcc ? [{ key: "bcc", value: Array.isArray(payload.bcc) ? payload.bcc.join(", ") : payload.bcc }] : []),
+					{ key: "subject", value: rendered.subject },
+					{ key: "date", value: sentAt },
+					{ key: "message-id", value: `<${outgoingMessageId}>` },
+				]),
+			},
+			attachmentData,
+		);
+
+		await this.recordEvent({
+			mailboxId: payload.mailboxId,
+			eventType: "transactional_sent",
+			email: primaryRecipient,
+			payload: {
+				apiKeyId: apiKey.id,
+				providerMessageId: sendResult.messageId,
+				internalMessageId: messageId,
+				templateId: payload.templateId || null,
+				trackOpens: Boolean(payload.trackOpens),
+				trackClicks: Boolean(payload.trackClicks),
+			},
+		});
+
+		return {
+			status: "sent",
+			apiKeyId: apiKey.id,
+			id: messageId,
+			messageId: sendResult.messageId,
+			mailboxId: payload.mailboxId,
+		};
 	}
 
 	async createWebhook(input: {

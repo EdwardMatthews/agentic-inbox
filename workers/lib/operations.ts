@@ -8,4 +8,3 @@ import type { Env } from "../types";
 export function getOperationsStub(env: Env): DurableObjectStub<OperationsDO> {
 	return env.OPERATIONS.get(env.OPERATIONS.idFromName("global"));
 }
-

@@ -99,3 +99,18 @@ export interface OperationsWebhook {
 	updated_at: string;
 }
 
+export interface ManagedApiKey {
+	id: string;
+	name: string;
+	key_prefix: string;
+	scopes: string[];
+	allowed_mailboxes: string[];
+	last_used_at?: string | null;
+	created_at: string;
+	revoked_at?: string | null;
+}
+
+export interface ManagedApiKeyCreateResult {
+	apiKey: string;
+	record: ManagedApiKey;
+}

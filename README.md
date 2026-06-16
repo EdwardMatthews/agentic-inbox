@@ -95,6 +95,24 @@ The operations subsystem is isolated from the core mailbox UI and mailbox DO sto
 - Event inspection: `/api/v1/operations/events`
 - Webhook subscriptions: `/api/v1/operations/webhooks`
 - Provider receipts: `POST /api/v1/operations/provider-receipts`
+- API key management for machine-to-machine callers: `/api/v1/settings/api-keys`
+
+## Transactional Email API
+
+For external applications that need to send transactional mail such as activation links, password resets, or security notifications, use:
+
+- `POST /api/v1/transactional/send`
+
+This endpoint is intentionally separate from the human-facing mailbox UI and is authenticated with a managed API key instead of Cloudflare Access. Create and revoke keys from the global settings page in the app, or through `/api/v1/settings/api-keys`.
+
+Supported authentication headers:
+
+- `Authorization: Bearer <api-key>`
+- `X-Agentic-Inbox-Api-Key: <api-key>`
+
+The API key supports mailbox allowlists and scope checks. The current scope used by the transactional endpoint is:
+
+- `transactional:send`
 
 Public tracking endpoints are intentionally exposed without Cloudflare Access because recipients must be able to hit them from email clients:
 

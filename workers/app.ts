@@ -36,7 +36,19 @@ const PUBLIC_OPERATION_PATH_PREFIXES = [
 	"/ops/click/",
 	"/ops/unsubscribe/",
 	"/api/v1/operations/provider-receipts",
+	"/api/v1/transactional/send",
 ];
+
+type PublicOperationsStub = {
+	trackOpen: (recipientId: string) => Promise<unknown>;
+	getPixelResponse: () => Promise<Uint8Array>;
+	trackClick: (recipientId: string, targetUrl: string) => Promise<unknown>;
+	unsubscribeByToken: (token: string, customerId?: string) => Promise<{ unsubscribed?: boolean; customer?: { email: string } | null }>;
+};
+
+function publicOperationsStub(env: Env): PublicOperationsStub {
+	return getOperationsStub(env) as unknown as PublicOperationsStub;
+}
 
 function getAccessUrls(teamDomain: string) {
 	const certsPath = "/cdn-cgi/access/certs";
@@ -95,12 +107,13 @@ app.use("*", async (c, next) => {
 });
 
 app.get("/ops/open/:recipientId.gif", async (c) => {
-	const stub = getOperationsStub(c.env);
+	const stub = publicOperationsStub(c.env);
 	const recipientId = c.req.param("recipientId");
 	if (!recipientId) return c.text("Missing recipient id", 400);
 	await stub.trackOpen(recipientId);
 	const gifBytes = await stub.getPixelResponse();
-	return new Response(gifBytes, {
+	const gifCopy = Uint8Array.from(gifBytes);
+	return new Response(new Blob([gifCopy], { type: "image/gif" }), {
 		headers: {
 			"Content-Type": "image/gif",
 			"Cache-Control": "no-store, no-cache, must-revalidate, private",
@@ -113,20 +126,21 @@ app.get("/ops/click/:recipientId", async (c) => {
 	if (!targetUrl) {
 		return c.text("Missing target URL", 400);
 	}
-	const stub = getOperationsStub(c.env);
+	const stub = publicOperationsStub(c.env);
 	await stub.trackClick(c.req.param("recipientId"), targetUrl);
 	return c.redirect(targetUrl, 302);
 });
 
 app.get("/ops/unsubscribe/:token", async (c) => {
-	const stub = getOperationsStub(c.env);
+	const stub = publicOperationsStub(c.env);
 	const token = c.req.param("token");
 	if (!token) return c.text("Missing unsubscribe token", 400);
 	const result = await stub.unsubscribeByToken(token, c.req.query("customerId"));
-	if (!result.unsubscribed || !result.customer) {
+	const unsubscribedCustomer = result.customer;
+	if (!result.unsubscribed || !unsubscribedCustomer) {
 		return c.html(`<!doctype html><html><body style="font-family: sans-serif; padding: 2rem;"><h1>Unsubscribe link invalid</h1><p>This link is invalid or has already expired.</p></body></html>`, 404);
 	}
-	return c.html(`<!doctype html><html><body style="font-family: sans-serif; padding: 2rem;"><h1>You're unsubscribed</h1><p>${result.customer.email} will no longer receive operational campaigns from this inbox.</p></body></html>`);
+	return c.html(`<!doctype html><html><body style="font-family: sans-serif; padding: 2rem;"><h1>You're unsubscribed</h1><p>${unsubscribedCustomer.email} will no longer receive operational campaigns from this inbox.</p></body></html>`);
 });
 
 // MCP server endpoint — used by AI coding tools (ProtoAgent, Claude Code, Cursor, etc.)
