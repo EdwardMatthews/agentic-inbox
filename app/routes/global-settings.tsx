@@ -74,9 +74,14 @@ export default function GlobalSettingsRoute() {
 							Manage machine-to-machine API keys for external applications that need to send transactional mail through Agentic Inbox.
 						</p>
 					</div>
-					<Button variant="primary" icon={<PlusIcon size={16} />} onClick={() => setIsOpen(true)}>
-						New API key
-					</Button>
+					<div className="flex items-center gap-2">
+						<Button variant="secondary" onClick={() => navigate("/api-docs")}>
+							API Docs
+						</Button>
+						<Button variant="primary" icon={<PlusIcon size={16} />} onClick={() => setIsOpen(true)}>
+							New API key
+						</Button>
+					</div>
 				</div>
 
 				<div className="rounded-xl border border-kumo-line bg-kumo-base p-5 mb-6">
@@ -202,4 +207,3 @@ export default function GlobalSettingsRoute() {
 		</div>
 	);
 }
-

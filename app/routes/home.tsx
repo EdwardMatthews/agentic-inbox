@@ -170,6 +170,12 @@ export default function HomeRoute() {
 							</Button>
 							<Button
 								variant="secondary"
+								onClick={() => navigate("/api-docs")}
+							>
+								API Docs
+							</Button>
+							<Button
+								variant="secondary"
 								onClick={() => navigate("/operations")}
 							>
 								Operations
