@@ -6,6 +6,15 @@ import { DurableObject } from "cloudflare:workers";
 import { sendEmail } from "../email-sender";
 import { storeAttachments } from "../lib/attachments";
 import { generateMessageId } from "../lib/email-helpers";
+import type { AuthSession, AuthUser, GlobalRole, MailboxRole, UserStatus } from "../lib/auth";
+import {
+	createSessionRecord,
+	hashPassword,
+	nowIso as authNowIso,
+	randomSecret,
+	sha256,
+	verifyPassword,
+} from "../lib/auth";
 import { Folders } from "../../shared/folders";
 import type { Env } from "../types";
 import { applyMigrations, type Migration } from "../durableObject/migrations";
@@ -123,6 +132,15 @@ export interface OperationsApiKey {
 export interface OperationsApiKeyCreateResult {
 	apiKey: string;
 	record: OperationsApiKey;
+}
+
+export interface MailboxMembership {
+	id: string;
+	user_id: string;
+	mailbox_id: string;
+	role: MailboxRole;
+	created_at: string;
+	updated_at: string;
 }
 
 export interface TransactionalSendPayload {
@@ -291,11 +309,52 @@ const operationsMigrations: Migration[] = [
 			CREATE INDEX IF NOT EXISTS idx_api_keys_revoked ON api_keys(revoked_at);
 		`,
 	},
-];
+	{
+		name: "3_operations_auth",
+		sql: `
+			CREATE TABLE IF NOT EXISTS users (
+				id TEXT PRIMARY KEY,
+				email TEXT NOT NULL UNIQUE,
+				name TEXT NOT NULL,
+				password_hash TEXT NOT NULL,
+				global_role TEXT NOT NULL DEFAULT 'member',
+				status TEXT NOT NULL DEFAULT 'active',
+				last_login_at TEXT,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL
+			);
 
-function nowIso() {
-	return new Date().toISOString();
-}
+			CREATE TABLE IF NOT EXISTS sessions (
+				id TEXT PRIMARY KEY,
+				user_id TEXT NOT NULL,
+				token_hash TEXT NOT NULL UNIQUE,
+				expires_at TEXT NOT NULL,
+				last_seen_at TEXT,
+				user_agent TEXT,
+				ip_address TEXT,
+				created_at TEXT NOT NULL,
+				revoked_at TEXT
+			);
+
+			CREATE TABLE IF NOT EXISTS mailbox_memberships (
+				id TEXT PRIMARY KEY,
+				user_id TEXT NOT NULL,
+				mailbox_id TEXT NOT NULL,
+				role TEXT NOT NULL DEFAULT 'viewer',
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				UNIQUE(user_id, mailbox_id)
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+			CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+			CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token_hash);
+			CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
+			CREATE INDEX IF NOT EXISTS idx_memberships_user ON mailbox_memberships(user_id);
+			CREATE INDEX IF NOT EXISTS idx_memberships_mailbox ON mailbox_memberships(mailbox_id);
+		`,
+	},
+];
 
 function parseJson<T>(value: string | null | undefined, fallback: T): T {
 	if (!value) return fallback;
@@ -310,26 +369,13 @@ function normalizeTags(tags?: string[] | null): string[] {
 	return [...new Set((tags || []).map((tag) => tag.trim()).filter(Boolean))];
 }
 
+function nowIso() {
+	return authNowIso();
+}
+
 function cleanBaseUrl(url: string | undefined): string | null {
 	if (!url?.trim()) return null;
 	return url.replace(/\/+$/, "");
-}
-
-function toHex(bytes: Uint8Array): string {
-	return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-async function sha256(input: string): Promise<string> {
-	const data = new TextEncoder().encode(input);
-	const digest = await crypto.subtle.digest("SHA-256", data);
-	return toHex(new Uint8Array(digest));
-}
-
-function randomToken(byteLength = 32): string {
-	const bytes = crypto.getRandomValues(new Uint8Array(byteLength));
-	let binary = "";
-	for (const byte of bytes) binary += String.fromCharCode(byte);
-	return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
 function renderPathValue(path: string, source: Record<string, unknown>): string {
@@ -518,6 +564,43 @@ export class OperationsDO extends DurableObject<Env> {
 			last_used_at: row.last_used_at ? String(row.last_used_at) : null,
 			created_at: String(row.created_at),
 			revoked_at: row.revoked_at ? String(row.revoked_at) : null,
+		};
+	}
+
+	private mapUser(row: Record<string, unknown>): AuthUser {
+		return {
+			id: String(row.id),
+			email: String(row.email),
+			name: String(row.name),
+			globalRole: String(row.global_role) as GlobalRole,
+			status: String(row.status) as UserStatus,
+			createdAt: String(row.created_at),
+			updatedAt: String(row.updated_at),
+			lastLoginAt: row.last_login_at ? String(row.last_login_at) : null,
+		};
+	}
+
+	private mapSession(row: Record<string, unknown>): AuthSession {
+		return {
+			id: String(row.id),
+			userId: String(row.user_id),
+			expiresAt: String(row.expires_at),
+			createdAt: String(row.created_at),
+			lastSeenAt: row.last_seen_at ? String(row.last_seen_at) : null,
+			userAgent: row.user_agent ? String(row.user_agent) : null,
+			ipAddress: row.ip_address ? String(row.ip_address) : null,
+			revokedAt: row.revoked_at ? String(row.revoked_at) : null,
+		};
+	}
+
+	private mapMembership(row: Record<string, unknown>): MailboxMembership {
+		return {
+			id: String(row.id),
+			user_id: String(row.user_id),
+			mailbox_id: String(row.mailbox_id),
+			role: String(row.role) as MailboxRole,
+			created_at: String(row.created_at),
+			updated_at: String(row.updated_at),
 		};
 	}
 
@@ -1614,6 +1697,276 @@ export class OperationsDO extends DurableObject<Env> {
 		).map((row) => this.mapWebhook(row));
 	}
 
+	async countUsers() {
+		const row = this.row<Record<string, unknown>>(`SELECT COUNT(*) as total FROM users`);
+		return Number(row?.total || 0);
+	}
+
+	async bootstrapAdmin(input: {
+		email: string;
+		name: string;
+		password: string;
+	}) {
+		if ((await this.countUsers()) > 0) {
+			throw new Error("Bootstrap has already been completed");
+		}
+
+		const createdAt = nowIso();
+		const userId = crypto.randomUUID();
+		const passwordHash = await hashPassword(input.password);
+		this.run(
+			`INSERT INTO users (
+				id, email, name, password_hash, global_role, status, last_login_at, created_at, updated_at
+			) VALUES (?1, ?2, ?3, ?4, 'admin', 'active', NULL, ?5, ?5)`,
+			userId,
+			input.email.trim().toLowerCase(),
+			input.name.trim(),
+			passwordHash,
+			createdAt,
+		);
+
+		return this.getUser(userId);
+	}
+
+	async listUsers() {
+		const users = this.rows<Record<string, unknown>>(
+			`SELECT id, email, name, global_role, status, last_login_at, created_at, updated_at
+			 FROM users
+			 ORDER BY created_at ASC`,
+		).map((row) => this.mapUser(row));
+
+		const memberships = this.rows<Record<string, unknown>>(
+			`SELECT * FROM mailbox_memberships ORDER BY mailbox_id ASC`,
+		).map((row) => this.mapMembership(row));
+
+		return users.map((user) => ({
+			...user,
+			memberships: memberships.filter((membership) => membership.user_id === user.id),
+		}));
+	}
+
+	async getUser(userId: string) {
+		const row = this.row<Record<string, unknown>>(
+			`SELECT id, email, name, global_role, status, last_login_at, created_at, updated_at
+			 FROM users WHERE id = ?1`,
+			userId,
+		);
+		return row ? this.mapUser(row) : null;
+	}
+
+	private async getUserWithPasswordByEmail(email: string) {
+		return this.row<Record<string, unknown>>(
+			`SELECT * FROM users WHERE email = ?1`,
+			email.trim().toLowerCase(),
+		);
+	}
+
+	async createUser(input: {
+		email: string;
+		name: string;
+		password: string;
+		globalRole?: GlobalRole;
+		status?: UserStatus;
+	}) {
+		const createdAt = nowIso();
+		const userId = crypto.randomUUID();
+		const passwordHash = await hashPassword(input.password);
+		this.run(
+			`INSERT INTO users (
+				id, email, name, password_hash, global_role, status, last_login_at, created_at, updated_at
+			) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?7)`,
+			userId,
+			input.email.trim().toLowerCase(),
+			input.name.trim(),
+			passwordHash,
+			input.globalRole || "member",
+			input.status || "active",
+			createdAt,
+		);
+		return this.getUser(userId);
+	}
+
+	async updateUser(userId: string, input: {
+		name?: string;
+		globalRole?: GlobalRole;
+		status?: UserStatus;
+		password?: string;
+	}) {
+		const existing = await this.getUser(userId);
+		if (!existing) return null;
+		const passwordRow = this.row<Record<string, unknown>>(`SELECT password_hash FROM users WHERE id = ?1`, userId);
+		const passwordHash = input.password ? await hashPassword(input.password) : String(passwordRow?.password_hash);
+		this.run(
+			`UPDATE users
+			 SET name = ?2,
+			     password_hash = ?3,
+			     global_role = ?4,
+			     status = ?5,
+			     updated_at = ?6
+			 WHERE id = ?1`,
+			userId,
+			input.name?.trim() || existing.name,
+			passwordHash,
+			input.globalRole || existing.globalRole,
+			input.status || existing.status,
+			nowIso(),
+		);
+		return this.getUser(userId);
+	}
+
+	async createSession(input: {
+		email: string;
+		password: string;
+		userAgent?: string | null;
+		ipAddress?: string | null;
+	}) {
+		const row = await this.getUserWithPasswordByEmail(input.email);
+		if (!row) return null;
+		const user = this.mapUser(row);
+		if (user.status !== "active") return null;
+		const passwordOk = await verifyPassword(input.password, String(row.password_hash));
+		if (!passwordOk) return null;
+
+		const sessionRecord = await createSessionRecord({
+			userId: user.id,
+			userAgent: input.userAgent,
+			ipAddress: input.ipAddress,
+		});
+		this.run(
+			`INSERT INTO sessions (
+				id, user_id, token_hash, expires_at, last_seen_at, user_agent, ip_address, created_at, revoked_at
+			) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL)`,
+			sessionRecord.id,
+			sessionRecord.userId,
+			sessionRecord.tokenHash,
+			sessionRecord.expiresAt,
+			sessionRecord.lastSeenAt,
+			sessionRecord.userAgent,
+			sessionRecord.ipAddress,
+			sessionRecord.createdAt,
+		);
+		this.run(
+			`UPDATE users SET last_login_at = ?2, updated_at = ?2 WHERE id = ?1`,
+			user.id,
+			nowIso(),
+		);
+		return {
+			user,
+			session: {
+				id: sessionRecord.id,
+				userId: sessionRecord.userId,
+				expiresAt: sessionRecord.expiresAt,
+				createdAt: sessionRecord.createdAt,
+				lastSeenAt: sessionRecord.lastSeenAt,
+				userAgent: sessionRecord.userAgent,
+				ipAddress: sessionRecord.ipAddress,
+				revokedAt: null,
+			},
+			rawToken: sessionRecord.rawToken,
+		};
+	}
+
+	async getSessionByToken(rawToken: string) {
+		const tokenHash = await sha256(rawToken);
+		const sessionRow = this.row<Record<string, unknown>>(
+			`SELECT * FROM sessions
+			 WHERE token_hash = ?1
+			   AND revoked_at IS NULL
+			   AND datetime(expires_at) > datetime('now')`,
+			tokenHash,
+		);
+		if (!sessionRow) return null;
+		const session = this.mapSession(sessionRow);
+		const user = await this.getUser(session.userId);
+		if (!user || user.status !== "active") return null;
+		this.run(
+			`UPDATE sessions SET last_seen_at = ?2 WHERE id = ?1`,
+			session.id,
+			nowIso(),
+		);
+		return { user, session };
+	}
+
+	async revokeSessionByToken(rawToken: string) {
+		const tokenHash = await sha256(rawToken);
+		this.run(
+			`UPDATE sessions SET revoked_at = ?2 WHERE token_hash = ?1 AND revoked_at IS NULL`,
+			tokenHash,
+			nowIso(),
+		);
+		return { revoked: true };
+	}
+
+	async setMailboxMembership(input: {
+		userId: string;
+		mailboxId: string;
+		role: MailboxRole;
+	}) {
+		const now = nowIso();
+		const existing = this.row<Record<string, unknown>>(
+			`SELECT id FROM mailbox_memberships WHERE user_id = ?1 AND mailbox_id = ?2`,
+			input.userId,
+			input.mailboxId,
+		);
+		if (existing?.id) {
+			this.run(
+				`UPDATE mailbox_memberships SET role = ?2, updated_at = ?3 WHERE id = ?1`,
+				String(existing.id),
+				input.role,
+				now,
+			);
+		} else {
+			this.run(
+				`INSERT INTO mailbox_memberships (
+					id, user_id, mailbox_id, role, created_at, updated_at
+				) VALUES (?1, ?2, ?3, ?4, ?5, ?5)`,
+				crypto.randomUUID(),
+				input.userId,
+				input.mailboxId,
+				input.role,
+				now,
+			);
+		}
+		return this.listMailboxMemberships(input.userId);
+	}
+
+	async removeMailboxMembership(userId: string, mailboxId: string) {
+		this.run(
+			`DELETE FROM mailbox_memberships WHERE user_id = ?1 AND mailbox_id = ?2`,
+			userId,
+			mailboxId,
+		);
+		return { deleted: true };
+	}
+
+	async listMailboxMemberships(userId?: string) {
+		const rows = userId
+			? this.rows<Record<string, unknown>>(
+				`SELECT * FROM mailbox_memberships WHERE user_id = ?1 ORDER BY mailbox_id ASC`,
+				userId,
+			)
+			: this.rows<Record<string, unknown>>(
+				`SELECT * FROM mailbox_memberships ORDER BY mailbox_id ASC`,
+			);
+		return rows.map((row) => this.mapMembership(row));
+	}
+
+	async getAccessibleMailboxIds(userId: string, globalRole: GlobalRole) {
+		if (globalRole === "admin") return null;
+		const memberships = await this.listMailboxMemberships(userId);
+		return memberships.map((membership) => membership.mailbox_id);
+	}
+
+	async getMailboxRole(userId: string, globalRole: GlobalRole, mailboxId: string): Promise<MailboxRole | null> {
+		if (globalRole === "admin") return "owner";
+		const row = this.row<Record<string, unknown>>(
+			`SELECT role FROM mailbox_memberships WHERE user_id = ?1 AND mailbox_id = ?2`,
+			userId,
+			mailboxId,
+		);
+		return row?.role ? (String(row.role) as MailboxRole) : null;
+	}
+
 	async listApiKeys() {
 		return this.rows<Record<string, unknown>>(
 			`SELECT id, name, key_prefix, scopes_json, allowed_mailboxes_json, last_used_at, created_at, revoked_at
@@ -1629,7 +1982,7 @@ export class OperationsDO extends DurableObject<Env> {
 	}) : Promise<OperationsApiKeyCreateResult> {
 		const id = crypto.randomUUID();
 		const createdAt = nowIso();
-		const secret = randomToken(32);
+		const secret = randomSecret(32);
 		const rawKey = `aik_live_${id.replace(/-/g, "")}_${secret}`;
 		const keyHash = await sha256(rawKey);
 		const keyPrefix = rawKey.slice(0, 18);

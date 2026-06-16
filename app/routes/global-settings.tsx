@@ -6,9 +6,17 @@ import { Badge, Button, Dialog, Empty, Input, Loader, useKumoToastManager } from
 import { ArrowLeftIcon, CopyIcon, KeyIcon, PlusIcon, TrashIcon } from "@phosphor-icons/react";
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router";
+import { useLogout } from "~/queries/auth";
 import { useMailboxes } from "~/queries/mailboxes";
 import { useApiKeys, useCreateApiKey, useRevokeApiKey } from "~/queries/global-settings";
-import type { ManagedApiKeyCreateResult } from "~/types/operations";
+import {
+	useCreateUser,
+	useRemoveUserMailboxMembership,
+	useSetUserMailboxMembership,
+	useUpdateUser,
+	useUsers,
+} from "~/queries/user-management";
+import type { ManagedApiKeyCreateResult, UserWithMemberships } from "~/types/operations";
 
 function copyText(value: string) {
 	return navigator.clipboard.writeText(value);
@@ -19,14 +27,31 @@ export default function GlobalSettingsRoute() {
 	const toastManager = useKumoToastManager();
 	const { data: apiKeys = [], isLoading } = useApiKeys();
 	const { data: mailboxes = [] } = useMailboxes();
+	const { data: users = [], isLoading: usersLoading } = useUsers();
 	const createApiKey = useCreateApiKey();
 	const revokeApiKey = useRevokeApiKey();
+	const createUser = useCreateUser();
+	const updateUser = useUpdateUser();
+	const setMembership = useSetUserMailboxMembership();
+	const removeMembership = useRemoveUserMailboxMembership();
+	const logout = useLogout();
 	const [isOpen, setIsOpen] = useState(false);
 	const [createdKey, setCreatedKey] = useState<ManagedApiKeyCreateResult | null>(null);
+	const [isUserOpen, setIsUserOpen] = useState(false);
+	const [editingUser, setEditingUser] = useState<UserWithMemberships | null>(null);
 	const [form, setForm] = useState({
 		name: "",
 		scopes: "transactional:send",
 		allowedMailboxes: "",
+	});
+	const [userForm, setUserForm] = useState({
+		name: "",
+		email: "",
+		password: "",
+		globalRole: "member",
+		status: "active",
+		mailboxId: "",
+		mailboxRole: "viewer",
 	});
 
 	const scopeOptions = ["transactional:send"];
@@ -61,6 +86,90 @@ export default function GlobalSettingsRoute() {
 		[mailboxes],
 	);
 
+	const openCreateUser = () => {
+		setEditingUser(null);
+		setUserForm({
+			name: "",
+			email: "",
+			password: "",
+			globalRole: "member",
+			status: "active",
+			mailboxId: mailboxes[0]?.email || "",
+			mailboxRole: "viewer",
+		});
+		setIsUserOpen(true);
+	};
+
+	const openEditUser = (user: UserWithMemberships) => {
+		setEditingUser(user);
+		setUserForm({
+			name: user.name,
+			email: user.email,
+			password: "",
+			globalRole: user.globalRole,
+			status: user.status,
+			mailboxId: mailboxes[0]?.email || "",
+			mailboxRole: "viewer",
+		});
+		setIsUserOpen(true);
+	};
+
+	const saveUser = async () => {
+		try {
+			if (editingUser) {
+				await updateUser.mutateAsync({
+					userId: editingUser.id,
+					body: {
+						name: userForm.name,
+						globalRole: userForm.globalRole,
+						status: userForm.status,
+						...(userForm.password ? { password: userForm.password } : {}),
+					},
+				});
+				toastManager.add({ title: "User updated" });
+			} else {
+				await createUser.mutateAsync({
+					name: userForm.name,
+					email: userForm.email,
+					password: userForm.password,
+					globalRole: userForm.globalRole,
+					status: userForm.status,
+				});
+				toastManager.add({ title: "User created" });
+			}
+			setIsUserOpen(false);
+		} catch (e) {
+			toastManager.add({ title: (e as Error).message, variant: "error" });
+		}
+	};
+
+	const addMembership = async (userId: string) => {
+		if (!userForm.mailboxId) return;
+		try {
+			await setMembership.mutateAsync({
+				userId,
+				body: {
+					userId,
+					mailboxId: userForm.mailboxId,
+					role: userForm.mailboxRole,
+				},
+			});
+			toastManager.add({ title: "Mailbox access updated" });
+		} catch (e) {
+			toastManager.add({ title: (e as Error).message, variant: "error" });
+		}
+	};
+
+	const revokeMembership = async (userId: string, mailboxId: string) => {
+		if (!window.confirm(`Remove access to ${mailboxId}?`)) return;
+		try {
+			await removeMembership.mutateAsync({ userId, mailboxId });
+			toastManager.add({ title: "Mailbox access removed" });
+		} catch (e) {
+			toastManager.add({ title: (e as Error).message, variant: "error" });
+		}
+	};
+
 	return (
 		<div className="min-h-screen bg-kumo-recessed">
 			<div className="mx-auto max-w-4xl px-4 py-8 md:px-6 md:py-12">
@@ -75,6 +184,15 @@ export default function GlobalSettingsRoute() {
 						</p>
 					</div>
 					<div className="flex items-center gap-2">
+						<Button
+							variant="ghost"
+							onClick={async () => {
+								await logout.mutateAsync();
+								navigate("/login");
+							}}
+						>
+							Log out
+						</Button>
 						<Button variant="secondary" onClick={() => navigate("/api-docs")}>
 							API Docs
 						</Button>
@@ -149,6 +267,111 @@ export default function GlobalSettingsRoute() {
 						}
 					/>
 				)}
+
+				<div className="mt-10">
+					<div className="mb-5 flex items-end justify-between gap-4">
+						<div>
+							<h2 className="text-lg font-semibold text-kumo-default">Users & Access</h2>
+							<p className="text-sm text-kumo-subtle mt-1">
+								Manage local users, global roles, and per-mailbox permissions.
+							</p>
+						</div>
+						<Button variant="primary" icon={<PlusIcon size={16} />} onClick={openCreateUser}>
+							New user
+						</Button>
+					</div>
+
+					{usersLoading ? (
+						<div className="flex justify-center py-16"><Loader size="lg" /></div>
+					) : users.length > 0 ? (
+						<div className="rounded-xl border border-kumo-line bg-kumo-base overflow-hidden">
+							{users.map((user, idx) => (
+								<div key={user.id} className={`px-5 py-4 ${idx > 0 ? "border-t border-kumo-line" : ""}`}>
+									<div className="flex flex-wrap items-start justify-between gap-4">
+										<div className="min-w-0">
+											<div className="flex items-center gap-2 flex-wrap">
+												<div className="text-sm font-semibold text-kumo-default">{user.name}</div>
+												<Badge variant={user.globalRole === "admin" ? "primary" : "secondary"}>
+													{user.globalRole}
+												</Badge>
+												<Badge variant={user.status === "active" ? "secondary" : "outline"}>
+													{user.status}
+												</Badge>
+											</div>
+											<div className="text-sm text-kumo-subtle mt-1">{user.email}</div>
+											<div className="text-xs text-kumo-subtle mt-2">
+												Last login: {user.lastLoginAt || "Never"}
+											</div>
+										</div>
+										<div className="flex items-center gap-2">
+											<Button variant="secondary" size="sm" onClick={() => openEditUser(user)}>
+												Edit
+											</Button>
+										</div>
+									</div>
+
+									<div className="mt-4 rounded-lg border border-kumo-line bg-kumo-recessed p-4">
+										<div className="text-sm font-medium text-kumo-strong">Mailbox access</div>
+										{user.memberships.length > 0 ? (
+											<div className="mt-3 flex flex-wrap gap-2">
+												{user.memberships.map((membership) => (
+													<div key={`${membership.user_id}:${membership.mailbox_id}`} className="flex items-center gap-2 rounded-md border border-kumo-line bg-kumo-base px-3 py-2 text-sm">
+														<span>{membership.mailbox_id}</span>
+														<Badge variant="outline">{membership.role}</Badge>
+														<Button
+															variant="ghost"
+															size="sm"
+															shape="square"
+															icon={<TrashIcon size={14} />}
+															onClick={() => revokeMembership(user.id, membership.mailbox_id)}
+															aria-label={`Remove ${membership.mailbox_id}`}
+														/>
+													</div>
+												))}
+											</div>
+										) : (
+											<div className="mt-3 text-sm text-kumo-subtle">No mailbox memberships assigned.</div>
+										)}
+										<div className="mt-4 flex flex-col gap-3 md:flex-row">
+											<div className="flex-1">
+												<Input
+													label="Mailbox"
+													placeholder={suggestedMailboxList || "noreply@example.com"}
+													value={userForm.mailboxId}
+													onChange={(e) => setUserForm((prev) => ({ ...prev, mailboxId: e.target.value }))}
+												/>
+											</div>
+											<div className="w-full md:w-40">
+												<Input
+													label="Role"
+													value={userForm.mailboxRole}
+													onChange={(e) => setUserForm((prev) => ({ ...prev, mailboxRole: e.target.value }))}
+													placeholder="viewer"
+												/>
+											</div>
+											<div className="flex items-end">
+												<Button variant="secondary" onClick={() => addMembership(user.id)}>
+													Grant access
+												</Button>
+											</div>
+										</div>
+									</div>
+								</div>
+							))}
+						</div>
+					) : (
+						<Empty
+							icon={<KeyIcon size={48} className="text-kumo-subtle" />}
+							title="No users yet"
+							description="Create local users and assign them mailbox access to replace Cloudflare Access."
+							contents={
+								<Button variant="primary" icon={<PlusIcon size={16} />} onClick={openCreateUser}>
+									Create user
+								</Button>
+							}
+						/>
+					)}
+				</div>
 			</div>
 
 			<Dialog.Root open={isOpen} onOpenChange={(open) => {
@@ -200,6 +423,27 @@ export default function GlobalSettingsRoute() {
 						<Button variant="secondary" onClick={() => setIsOpen(false)}>Close</Button>
 						<Button variant="primary" onClick={saveApiKey} loading={createApiKey.isPending}>
 							Create key
+						</Button>
+					</div>
+				</Dialog>
+			</Dialog.Root>
+
+			<Dialog.Root open={isUserOpen} onOpenChange={setIsUserOpen}>
+				<Dialog size="lg" className="p-6">
+					<Dialog.Title className="text-base font-semibold mb-5">
+						{editingUser ? "Edit user" : "Create user"}
+					</Dialog.Title>
+					<div className="space-y-4">
+						<Input label="Name" value={userForm.name} onChange={(e) => setUserForm((prev) => ({ ...prev, name: e.target.value }))} />
+						<Input label="Email" type="email" value={userForm.email} onChange={(e) => setUserForm((prev) => ({ ...prev, email: e.target.value }))} disabled={Boolean(editingUser)} />
+						<Input label={editingUser ? "New password (optional)" : "Password"} type="password" value={userForm.password} onChange={(e) => setUserForm((prev) => ({ ...prev, password: e.target.value }))} />
+						<Input label="Global role" value={userForm.globalRole} onChange={(e) => setUserForm((prev) => ({ ...prev, globalRole: e.target.value }))} placeholder="member" />
+						<Input label="Status" value={userForm.status} onChange={(e) => setUserForm((prev) => ({ ...prev, status: e.target.value }))} placeholder="active" />
+					</div>
+					<div className="mt-6 flex justify-end gap-2">
+						<Button variant="secondary" onClick={() => setIsUserOpen(false)}>Cancel</Button>
+						<Button variant="primary" onClick={saveUser} loading={createUser.isPending || updateUser.isPending}>
+							Save user
 						</Button>
 					</div>
 				</Dialog>

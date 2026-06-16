@@ -8,13 +8,15 @@
  * and attaches it to the Hono context (`c.var.mailboxStub`).
  */
 import { createMiddleware } from "hono/factory";
+import type { AuthVariables, MailboxRole } from "./auth";
 import type { MailboxDO } from "../durableObject";
 import type { Env } from "../types";
 
 export type MailboxContext = {
 	Bindings: Env;
-	Variables: {
+	Variables: AuthVariables & {
 		mailboxStub: DurableObjectStub<MailboxDO>;
+		mailboxRole?: MailboxRole | null;
 	};
 };
 

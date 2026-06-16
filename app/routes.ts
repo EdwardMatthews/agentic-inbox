@@ -10,6 +10,8 @@ import {
 
 export default [
 	index("routes/home.tsx"),
+	route("login", "routes/login.tsx"),
+	route("setup-admin", "routes/setup-admin.tsx"),
 	route("api-docs", "routes/api-docs.tsx"),
 	route("settings", "routes/global-settings.tsx"),
 	route("operations", "routes/operations.tsx", [

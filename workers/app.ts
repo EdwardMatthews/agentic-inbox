@@ -4,11 +4,12 @@
 
 import { routeAgentRequest } from "agents";
 import { Hono } from "hono";
-import { jwtVerify, createRemoteJWKSet } from "jose";
 import { createRequestHandler } from "react-router";
 import { app as apiApp, receiveEmail } from "./index";
 import { EmailMCP } from "./mcp";
 import { OperationsDO } from "./operations";
+import { authRouter } from "./routes/auth";
+import { authMiddleware } from "./lib/auth-middleware";
 import { getOperationsStub } from "./lib/operations";
 import type { Env } from "./types";
 
@@ -31,14 +32,6 @@ const requestHandler = createRequestHandler(
 	import.meta.env.MODE,
 );
 
-const PUBLIC_OPERATION_PATH_PREFIXES = [
-	"/ops/open/",
-	"/ops/click/",
-	"/ops/unsubscribe/",
-	"/api/v1/operations/provider-receipts",
-	"/api/v1/transactional/send",
-];
-
 type PublicOperationsStub = {
 	trackOpen: (recipientId: string) => Promise<unknown>;
 	getPixelResponse: () => Promise<Uint8Array>;
@@ -50,61 +43,10 @@ function publicOperationsStub(env: Env): PublicOperationsStub {
 	return getOperationsStub(env) as unknown as PublicOperationsStub;
 }
 
-function getAccessUrls(teamDomain: string) {
-	const certsPath = "/cdn-cgi/access/certs";
-	const teamUrl = new URL(teamDomain);
-	const issuer = teamUrl.origin;
-	const certsUrl = teamUrl.pathname.endsWith(certsPath)
-		? teamUrl
-		: new URL(certsPath, issuer);
-
-	return { issuer, certsUrl };
-}
-
 // Main app that wraps the API and adds React Router fallback
 const app = new Hono<{ Bindings: Env }>();
 
-// Cloudflare Access JWT validation middleware (production only)
-app.use("*", async (c, next) => {
-	if (PUBLIC_OPERATION_PATH_PREFIXES.some((prefix) => c.req.path.startsWith(prefix))) {
-		return next();
-	}
-
-	// Skip validation in development
-	if (import.meta.env.DEV) {
-		return next();
-	}
-
-	const { POLICY_AUD, TEAM_DOMAIN } = c.env;
-
-	// Fail closed in production if Access is not configured.
-	if (!POLICY_AUD || !TEAM_DOMAIN) {
-		return c.text(
-			"Cloudflare Access must be configured in production. Set POLICY_AUD and TEAM_DOMAIN.",
-			500,
-		);
-	}
-
-	const token = c.req.header("cf-access-jwt-assertion");
-	if (!token) {
-		return c.text("Missing required CF Access JWT", 403);
-	}
-
-	try {
-		const { issuer, certsUrl } = getAccessUrls(TEAM_DOMAIN);
-		const JWKS = createRemoteJWKSet(certsUrl);
-		await jwtVerify(token, JWKS, {
-			issuer,
-			audience: POLICY_AUD,
-		});
-	} catch {
-		return c.text("Invalid or expired Access token", 403);
-	}
-
-	// Authorization model note: once a teammate passes the shared Cloudflare
-	// Access policy, they can access all mailboxes in this app by design.
-	return next();
-});
+app.use("*", authMiddleware);
 
 app.get("/ops/open/:recipientId.gif", async (c) => {
 	const stub = publicOperationsStub(c.env);
@@ -154,6 +96,7 @@ app.all("/mcp/*", async (c) => {
 });
 
 // Mount the API routes
+app.route("/api/v1/auth", authRouter);
 app.route("/", apiApp);
 
 // Agent WebSocket routing - must be before React Router catch-all

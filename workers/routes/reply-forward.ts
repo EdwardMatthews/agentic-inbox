@@ -5,6 +5,7 @@
 import type { Context } from "hono";
 import { sendEmail } from "../email-sender";
 import { storeAttachments } from "../lib/attachments";
+import { hasMailboxRole } from "../lib/auth";
 import type { EmailFull } from "../lib/schemas";
 import {
 	validateSender,
@@ -22,6 +23,9 @@ type AppContext = Context<MailboxContext>;
 type RateLimitStub = { checkSendRateLimit: () => Promise<string | null> };
 
 export async function handleReplyEmail(c: AppContext) {
+	if (!(c.var.auth.user?.globalRole === "admin" || hasMailboxRole(c.var.mailboxRole, "editor"))) {
+		return c.json({ error: "Forbidden" }, 403);
+	}
 	const mailboxId = c.req.param("mailboxId") ?? "";
 	const id = c.req.param("id") ?? "";
 	const body = SendEmailRequestSchema.parse(await c.req.json());
@@ -113,6 +117,9 @@ export async function handleReplyEmail(c: AppContext) {
 }
 
 export async function handleForwardEmail(c: AppContext) {
+	if (!(c.var.auth.user?.globalRole === "admin" || hasMailboxRole(c.var.mailboxRole, "editor"))) {
+		return c.json({ error: "Forbidden" }, 403);
+	}
 	const mailboxId = c.req.param("mailboxId") ?? "";
 	const id = c.req.param("id") ?? "";
 	const body = SendEmailRequestSchema.parse(await c.req.json());

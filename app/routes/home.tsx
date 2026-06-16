@@ -17,6 +17,7 @@ import { useQuery } from "@tanstack/react-query";
 import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Link as RouterLink, useNavigate } from "react-router";
 import api from "~/services/api";
+import { useAuthSession, useLogout } from "~/queries/auth";
 import {
 	useCreateMailbox,
 	useDeleteMailbox,
@@ -31,6 +32,8 @@ export function meta() {
 export default function HomeRoute() {
 	const toastManager = useKumoToastManager();
 	const navigate = useNavigate();
+	const { data: sessionData } = useAuthSession();
+	const logout = useLogout();
 	const {
 		data: mailboxes = [],
 		refetch: refetchMailboxes,
@@ -65,6 +68,7 @@ export default function HomeRoute() {
 	const [isDeleting, setIsDeleting] = useState(false);
 	const [isAutoCreatingMailboxes, setIsAutoCreatingMailboxes] = useState(false);
 	const [selectedTag, setSelectedTag] = useState("");
+	const isAdmin = sessionData?.user?.globalRole === "admin";
 
 	// Set default domain when config loads
 	useEffect(() => {
@@ -77,7 +81,7 @@ export default function HomeRoute() {
 	const autoCreateDone = useRef(false);
 	useEffect(() => {
 		if (autoCreateDone.current) return;
-		if (emailAddresses.length === 0 || !mailboxesFetched) {
+		if (!isAdmin || emailAddresses.length === 0 || !mailboxesFetched) {
 			setIsAutoCreatingMailboxes(false);
 			return;
 		}
@@ -107,7 +111,7 @@ export default function HomeRoute() {
 			}
 		});
 		return () => { cancelled = true; };
-	}, [emailAddresses, mailboxes, refetchMailboxes]);
+	}, [emailAddresses, isAdmin, mailboxes, refetchMailboxes]);
 
 	const handleCreate = async (e: FormEvent) => {
 		e.preventDefault();
@@ -200,25 +204,38 @@ export default function HomeRoute() {
 					<div className="flex items-center justify-between">
 						<h1 className="text-2xl font-bold text-kumo-default">Mailboxes</h1>
 						<div className="flex items-center gap-2">
+							{isAdmin && (
+								<>
+									<Button
+										variant="secondary"
+										onClick={() => navigate("/settings")}
+									>
+										Global Settings
+									</Button>
+									<Button
+										variant="secondary"
+										onClick={() => navigate("/api-docs")}
+									>
+										API Docs
+									</Button>
+									<Button
+										variant="secondary"
+										onClick={() => navigate("/operations")}
+									>
+										Operations
+									</Button>
+								</>
+							)}
 							<Button
-								variant="secondary"
-								onClick={() => navigate("/settings")}
+								variant="ghost"
+								onClick={async () => {
+									await logout.mutateAsync();
+									navigate("/login");
+								}}
 							>
-								Global Settings
+								Log out
 							</Button>
-							<Button
-								variant="secondary"
-								onClick={() => navigate("/api-docs")}
-							>
-								API Docs
-							</Button>
-							<Button
-								variant="secondary"
-								onClick={() => navigate("/operations")}
-							>
-								Operations
-							</Button>
-							{!isConfigured && (
+							{isAdmin && !isConfigured && (
 								<Button
 									variant="primary"
 									icon={<PlusIcon size={16} />}

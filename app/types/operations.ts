@@ -114,3 +114,27 @@ export interface ManagedApiKeyCreateResult {
 	apiKey: string;
 	record: ManagedApiKey;
 }
+
+export interface AuthenticatedUser {
+	id: string;
+	email: string;
+	name: string;
+	globalRole: "admin" | "member";
+	status: "active" | "disabled";
+	createdAt: string;
+	updatedAt: string;
+	lastLoginAt?: string | null;
+}
+
+export interface MailboxMembership {
+	id: string;
+	user_id: string;
+	mailbox_id: string;
+	role: "viewer" | "editor" | "owner";
+	created_at: string;
+	updated_at: string;
+}
+
+export interface UserWithMemberships extends AuthenticatedUser {
+	memberships: MailboxMembership[];
+}

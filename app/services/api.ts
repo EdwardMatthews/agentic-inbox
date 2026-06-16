@@ -6,12 +6,15 @@ import type { Email, Folder, Mailbox } from "~/types";
 import type {
 	ManagedApiKey,
 	ManagedApiKeyCreateResult,
+	AuthenticatedUser,
+	MailboxMembership,
 	OperationsCampaign,
 	OperationsCustomer,
 	OperationsEvent,
 	OperationsRecipient,
 	OperationsTemplate,
 	OperationsWebhook,
+	UserWithMemberships,
 } from "~/types/operations";
 
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -108,6 +111,18 @@ const api = {
 	// Config
 	getConfig: () =>
 		get<{ domains: string[]; emailAddresses: string[]; operationsBaseUrl?: string | null }>("/api/v1/config"),
+
+	// Auth
+	getBootstrapStatus: () =>
+		get<{ bootstrapRequired: boolean }>("/api/v1/auth/bootstrap-status"),
+	getSession: () =>
+		get<{ user: AuthenticatedUser | null }>("/api/v1/auth/session"),
+	login: (body: { email: string; password: string }) =>
+		post<{ user: AuthenticatedUser }>("/api/v1/auth/login", body),
+	logout: () =>
+		post<{ loggedOut: boolean }>("/api/v1/auth/logout"),
+	bootstrapAdmin: (body: { email: string; name: string; password: string }) =>
+		post<{ user: AuthenticatedUser }>("/api/v1/auth/bootstrap-admin", body),
 
 	// Mailboxes
 	listMailboxes: () => get<Mailbox[]>("/api/v1/mailboxes"),
@@ -232,6 +247,16 @@ const api = {
 		post<ManagedApiKeyCreateResult>("/api/v1/settings/api-keys", body),
 	revokeApiKey: (apiKeyId: string) =>
 		del<void>(`/api/v1/settings/api-keys/${apiKeyId}`),
+	listUsers: () =>
+		get<UserWithMemberships[]>("/api/v1/settings/users"),
+	createUser: (body: unknown) =>
+		post<AuthenticatedUser>("/api/v1/settings/users", body),
+	updateUser: (userId: string, body: unknown) =>
+		put<AuthenticatedUser>(`/api/v1/settings/users/${userId}`, body),
+	setUserMailboxMembership: (userId: string, body: unknown) =>
+		put<MailboxMembership[]>(`/api/v1/settings/users/${userId}/memberships`, body),
+	removeUserMailboxMembership: (userId: string, mailboxId: string) =>
+		del<void>(`/api/v1/settings/users/${userId}/memberships/${encodeURIComponent(mailboxId)}`),
 };
 
 export default api;

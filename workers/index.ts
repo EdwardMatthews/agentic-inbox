@@ -16,6 +16,8 @@ import {
 	listMailboxes,
 } from "./lib/email-helpers";
 import { SendEmailRequestSchema } from "./lib/schemas";
+import { hasMailboxRole } from "./lib/auth";
+import { requireGlobalAdmin } from "./lib/auth-middleware";
 import { globalSettingsRouter } from "./routes/global-settings";
 import { transactionalRouter } from "./routes/transactional";
 import { handleReplyEmail, handleForwardEmail } from "./routes/reply-forward";
@@ -28,6 +30,14 @@ type AppContext = Context<MailboxContext>;
 type MailboxSummaryStub = {
 	getMailboxSummary: () => Promise<{ inboxUnreadCount: number }>;
 };
+
+function canEditMailbox(c: AppContext) {
+	return c.var.auth.user?.globalRole === "admin" || hasMailboxRole(c.var.mailboxRole, "editor");
+}
+
+function canManageMailbox(c: AppContext) {
+	return c.var.auth.user?.globalRole === "admin" || hasMailboxRole(c.var.mailboxRole, "owner");
+}
 
 // -- Request body schemas (kept for validation) ---------------------
 
@@ -107,9 +117,12 @@ app.route("/api/v1/transactional", transactionalRouter);
 // -- Mailboxes ------------------------------------------------------
 
 app.get("/api/v1/mailboxes", async (c) => {
+	const allowedMailboxIds = c.var.auth.allowedMailboxIds;
 	const allMailboxes = await listMailboxes(c.env.BUCKET);
 	const mailboxes = await Promise.all(
-		allMailboxes.map(async (mailbox) => {
+		allMailboxes
+			.filter((mailbox) => allowedMailboxIds === null || allowedMailboxIds.includes(mailbox.id))
+			.map(async (mailbox) => {
 			const stub = c.env.MAILBOX.get(c.env.MAILBOX.idFromName(mailbox.id));
 			const settingsObj = await c.env.BUCKET.get(`mailboxes/${mailbox.id}.json`);
 			const settings: Record<string, unknown> = settingsObj
@@ -142,6 +155,7 @@ app.get("/api/v1/mailboxes", async (c) => {
 });
 
 app.post("/api/v1/mailboxes", async (c) => {
+	if (!requireGlobalAdmin(c)) return c.json({ error: "Forbidden" }, 403);
 	const { name, settings, email: rawEmail } = CreateMailboxBody.parse(await c.req.json());
 	const email = rawEmail.toLowerCase();
 	const allowedAddresses = (c.env.EMAIL_ADDRESSES ?? []) as string[];
@@ -166,6 +180,7 @@ app.get("/api/v1/mailboxes/:mailboxId", async (c) => {
 });
 
 app.put("/api/v1/mailboxes/:mailboxId", async (c) => {
+	if (!canManageMailbox(c as AppContext)) return c.json({ error: "Forbidden" }, 403);
 	const mailboxId = c.req.param("mailboxId")!;
 	const { settings } = (await c.req.json()) as { settings: Record<string, unknown> };
 	const key = `mailboxes/${mailboxId}.json`;
@@ -175,6 +190,7 @@ app.put("/api/v1/mailboxes/:mailboxId", async (c) => {
 });
 
 app.delete("/api/v1/mailboxes/:mailboxId", async (c) => {
+	if (!requireGlobalAdmin(c)) return c.json({ error: "Forbidden" }, 403);
 	const mailboxId = c.req.param("mailboxId")!;
 	const key = `mailboxes/${mailboxId}.json`;
 	if (!(await c.env.BUCKET.head(key))) return c.json({ error: "Not found" }, 404);
@@ -208,6 +224,7 @@ app.get("/api/v1/mailboxes/:mailboxId/emails", async (c: AppContext) => {
 });
 
 app.post("/api/v1/mailboxes/:mailboxId/emails", async (c: AppContext) => {
+	if (!canEditMailbox(c)) return c.json({ error: "Forbidden" }, 403);
 	const mailboxId = c.req.param("mailboxId")!;
 	const body = SendEmailRequestSchema.parse(await c.req.json());
 	const { to, cc, bcc, from, subject, html, text, attachments, in_reply_to, references, thread_id } = body;
@@ -254,6 +271,7 @@ app.post("/api/v1/mailboxes/:mailboxId/emails", async (c: AppContext) => {
 });
 
 app.post("/api/v1/mailboxes/:mailboxId/drafts", async (c: AppContext) => {
+	if (!canEditMailbox(c)) return c.json({ error: "Forbidden" }, 403);
 	const mailboxId = c.req.param("mailboxId")!;
 	const { to, cc, bcc, subject, body, in_reply_to, thread_id, draft_id } = DraftBody.parse(await c.req.json());
 	const stub = c.var.mailboxStub;
@@ -284,6 +302,7 @@ app.put("/api/v1/mailboxes/:mailboxId/emails/:id", async (c: AppContext) => {
 });
 
 app.delete("/api/v1/mailboxes/:mailboxId/emails/:id", async (c: AppContext) => {
+	if (!canEditMailbox(c)) return c.json({ error: "Forbidden" }, 403);
 	const id = c.req.param("id")!;
 	const attachments = await c.var.mailboxStub.deleteEmail(id);
 	if (attachments === null) return c.json({ error: "Not found" }, 404);
@@ -292,6 +311,7 @@ app.delete("/api/v1/mailboxes/:mailboxId/emails/:id", async (c: AppContext) => {
 });
 
 app.post("/api/v1/mailboxes/:mailboxId/emails/:id/move", async (c: AppContext) => {
+	if (!canEditMailbox(c)) return c.json({ error: "Forbidden" }, 403);
 	const { folderId } = (await c.req.json()) as { folderId: string };
 	const success = await c.var.mailboxStub.moveEmail(c.req.param("id")!, folderId);
 	return success ? c.json({ status: "moved" }) : c.json({ error: "Folder not found" }, 400);
@@ -318,6 +338,7 @@ app.post("/api/v1/mailboxes/:mailboxId/emails/:id/forward", handleForwardEmail);
 app.get("/api/v1/mailboxes/:mailboxId/folders", async (c: AppContext) => c.json(await c.var.mailboxStub.getFolders()));
 
 app.post("/api/v1/mailboxes/:mailboxId/folders", async (c: AppContext) => {
+	if (!canEditMailbox(c)) return c.json({ error: "Forbidden" }, 403);
 	const { name } = (await c.req.json()) as { name: string };
 	const slug = slugify(name);
 	if (!slug) return c.json({ error: "Folder name must contain alphanumeric characters" }, 400);
@@ -326,12 +347,14 @@ app.post("/api/v1/mailboxes/:mailboxId/folders", async (c: AppContext) => {
 });
 
 app.put("/api/v1/mailboxes/:mailboxId/folders/:id", async (c: AppContext) => {
+	if (!canEditMailbox(c)) return c.json({ error: "Forbidden" }, 403);
 	const { name } = (await c.req.json()) as { name: string };
 	const f = await c.var.mailboxStub.updateFolder(c.req.param("id")!, name);
 	return f ? c.json(f) : c.json({ error: "Folder not found" }, 404);
 });
 
 app.delete("/api/v1/mailboxes/:mailboxId/folders/:id", async (c: AppContext) => {
+	if (!canEditMailbox(c)) return c.json({ error: "Forbidden" }, 403);
 	const ok = await c.var.mailboxStub.deleteFolder(c.req.param("id")!);
 	return ok ? c.body(null, 204) : c.json({ error: "Folder not found or cannot be deleted" }, 400);
 });
