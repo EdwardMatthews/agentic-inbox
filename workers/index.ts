@@ -111,18 +111,28 @@ app.get("/api/v1/mailboxes", async (c) => {
 	const mailboxes = await Promise.all(
 		allMailboxes.map(async (mailbox) => {
 			const stub = c.env.MAILBOX.get(c.env.MAILBOX.idFromName(mailbox.id));
+			const settingsObj = await c.env.BUCKET.get(`mailboxes/${mailbox.id}.json`);
+			const settings: Record<string, unknown> = settingsObj
+				? await settingsObj.json<Record<string, unknown>>().catch(() => ({}))
+				: {};
 			try {
 				const summary = await (stub as unknown as MailboxSummaryStub).getMailboxSummary();
 				return {
 					...mailbox,
-					name: mailbox.id,
+					name: typeof settings.fromName === "string" && settings.fromName.trim()
+						? settings.fromName.trim()
+						: mailbox.id,
+					settings,
 					inboxUnreadCount: summary.inboxUnreadCount,
 				};
 			} catch (e) {
 				console.error(`Failed to load mailbox summary for ${mailbox.id}:`, (e as Error).message);
 				return {
 					...mailbox,
-					name: mailbox.id,
+					name: typeof settings.fromName === "string" && settings.fromName.trim()
+						? settings.fromName.trim()
+						: mailbox.id,
+					settings,
 					inboxUnreadCount: 0,
 				};
 			}
@@ -140,7 +150,7 @@ app.post("/api/v1/mailboxes", async (c) => {
 	}
 	const key = `mailboxes/${email}.json`;
 	if (await c.env.BUCKET.head(key)) return c.json({ error: "Mailbox already exists" }, 409);
-	const defaultSettings = { fromName: name, forwarding: { enabled: false, email: "" }, signature: { enabled: false, text: "" }, autoReply: { enabled: false, subject: "", message: "" } };
+	const defaultSettings = { fromName: name, tags: [], forwarding: { enabled: false, email: "" }, signature: { enabled: false, text: "" }, autoReply: { enabled: false, subject: "", message: "" } };
 	const finalSettings = { ...defaultSettings, ...settings };
 	await c.env.BUCKET.put(key, JSON.stringify(finalSettings));
 	const stub = c.env.MAILBOX.get(c.env.MAILBOX.idFromName(email));

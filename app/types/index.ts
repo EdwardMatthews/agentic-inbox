@@ -10,6 +10,7 @@ export interface SignatureSettings {
 
 export interface MailboxSettings {
 	fromName?: string;
+	tags?: string[];
 	forwarding?: { enabled: boolean; email: string };
 	signature?: SignatureSettings;
 	autoReply?: { enabled: boolean; subject: string; message: string };

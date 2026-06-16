@@ -14,7 +14,7 @@ import {
 } from "@cloudflare/kumo";
 import { EnvelopeIcon, PlusIcon, TrashIcon } from "@phosphor-icons/react";
 import { useQuery } from "@tanstack/react-query";
-import { type FormEvent, useEffect, useRef, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Link as RouterLink, useNavigate } from "react-router";
 import api from "~/services/api";
 import {
@@ -64,6 +64,7 @@ export default function HomeRoute() {
 	} | null>(null);
 	const [isDeleting, setIsDeleting] = useState(false);
 	const [isAutoCreatingMailboxes, setIsAutoCreatingMailboxes] = useState(false);
+	const [selectedTag, setSelectedTag] = useState("");
 
 	// Set default domain when config loads
 	useEffect(() => {
@@ -155,6 +156,43 @@ export default function HomeRoute() {
 		accounts.length === 0 &&
 		(!mailboxesFetched || isAutoCreatingMailboxes);
 
+	const allTags = useMemo(
+		() => [...new Set(
+			accounts.flatMap((account) => account.settings?.tags || []),
+		)].sort((a, b) => a.localeCompare(b)),
+		[accounts],
+	);
+
+	const filteredAccounts = useMemo(
+		() => selectedTag
+			? accounts.filter((account) => (account.settings?.tags || []).includes(selectedTag))
+			: accounts,
+		[accounts, selectedTag],
+	);
+
+	const groupedAccounts = useMemo(() => {
+		const orderLookup = new Map(domains.map((domain, index) => [domain.toLowerCase(), index]));
+		const groups = new Map<string, typeof filteredAccounts>();
+		for (const account of filteredAccounts) {
+			const domain = account.email.split("@")[1] || "unknown";
+			const existing = groups.get(domain) || [];
+			existing.push(account);
+			groups.set(domain, existing);
+		}
+
+		return [...groups.entries()]
+			.sort(([domainA], [domainB]) => {
+				const orderA = orderLookup.get(domainA.toLowerCase()) ?? Number.MAX_SAFE_INTEGER;
+				const orderB = orderLookup.get(domainB.toLowerCase()) ?? Number.MAX_SAFE_INTEGER;
+				if (orderA !== orderB) return orderA - orderB;
+				return domainA.localeCompare(domainB);
+			})
+			.map(([domain, mailboxesInDomain]) => ({
+				domain,
+				mailboxes: [...mailboxesInDomain].sort((a, b) => a.email.localeCompare(b.email)),
+			}));
+	}, [domains, filteredAccounts]);
+
 	return (
 		<div className="min-h-screen bg-kumo-recessed">
 			<div className="mx-auto max-w-2xl px-4 py-8 md:px-6 md:py-16">
@@ -196,6 +234,22 @@ export default function HomeRoute() {
 							{domains.join(", ")}
 						</p>
 					)}
+					{allTags.length > 0 && (
+						<div className="mt-4 max-w-xs">
+							<Select
+								label="Filter by tag"
+								value={selectedTag}
+								onValueChange={(value) => setSelectedTag(value || "")}
+							>
+								<Select.Option value="">All mailboxes</Select.Option>
+								{allTags.map((tag) => (
+									<Select.Option key={tag} value={tag}>
+										{tag}
+									</Select.Option>
+								))}
+							</Select>
+						</div>
+					)}
 				</div>
 
 				{isLoading ? (
@@ -216,59 +270,102 @@ export default function HomeRoute() {
 							</p>
 						</div>
 					</div>
-				) : accounts.length > 0 ? (
-					<div className="rounded-xl border border-kumo-line bg-kumo-base overflow-hidden">
-						{accounts.map((account, idx) => {
-							const displayName =
-								account.name && account.name !== account.email
-									? account.name
-									: account.email.split("@")[0] || account.email;
+				) : filteredAccounts.length > 0 ? (
+					<div className="space-y-6">
+						{groupedAccounts.map((group) => (
+							<div key={group.domain} className="rounded-xl border border-kumo-line bg-kumo-base overflow-hidden">
+								<div className="flex items-center justify-between px-5 py-3 border-b border-kumo-line bg-kumo-fill/20">
+									<div>
+										<div className="text-sm font-semibold text-kumo-default">{group.domain}</div>
+										<div className="text-xs text-kumo-subtle mt-0.5">
+											{group.mailboxes.length} mailbox{group.mailboxes.length !== 1 ? "es" : ""}
+										</div>
+									</div>
+								</div>
+								{group.mailboxes.map((account, idx) => {
+									const displayName =
+										account.name && account.name !== account.email
+											? account.name
+											: account.email.split("@")[0] || account.email;
+									const tags = account.settings?.tags || [];
 
-							return (
-								<RouterLink
-									key={account.id}
-									to={`/mailbox/${account.id}`}
-									className={`group flex items-center gap-4 px-5 py-4 no-underline transition-colors hover:bg-kumo-tint ${
-										idx > 0 ? "border-t border-kumo-line" : ""
-									}`}
-								>
-									<div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-kumo-fill text-sm font-bold text-kumo-default">
-										{displayName.charAt(0).toUpperCase()}
-									</div>
-									<div className="min-w-0 flex-1">
-										<div className="text-sm font-medium text-kumo-default truncate">
-											{displayName}
-										</div>
-										<div className="text-sm text-kumo-subtle">
-											{account.email}
-										</div>
-									</div>
-									{(account.inboxUnreadCount ?? 0) > 0 && (
-										<Badge variant="secondary">
-											{account.inboxUnreadCount}
-										</Badge>
-									)}
-									{!isConfigured && (
-										<Button
-											variant="ghost"
-											size="sm"
-											shape="square"
-											icon={<TrashIcon size={16} />}
-											aria-label={`Delete mailbox ${account.email}`}
-											onClick={(e) => {
-												e.preventDefault();
-												e.stopPropagation();
-												setMailboxToDelete({
-													id: account.id,
-													email: account.email,
-												});
-												setIsDeleteOpen(true);
-											}}
-										/>
-									)}
-								</RouterLink>
-							);
-						})}
+									return (
+										<RouterLink
+											key={account.id}
+											to={`/mailbox/${account.id}`}
+											className={`group flex items-center gap-4 px-5 py-4 no-underline transition-colors hover:bg-kumo-tint ${
+												idx > 0 ? "border-t border-kumo-line" : ""
+											}`}
+										>
+											<div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-kumo-fill text-sm font-bold text-kumo-default">
+												{displayName.charAt(0).toUpperCase()}
+											</div>
+											<div className="min-w-0 flex-1">
+												<div className="text-sm font-medium text-kumo-default truncate">
+													{displayName}
+												</div>
+												<div className="text-sm text-kumo-subtle">
+													{account.email}
+												</div>
+												{tags.length > 0 && (
+													<div className="mt-2 flex flex-wrap gap-1">
+														{tags.map((tag) => (
+															<Badge key={tag} variant="outline">
+																{tag}
+															</Badge>
+														))}
+													</div>
+												)}
+											</div>
+											{(account.inboxUnreadCount ?? 0) > 0 && (
+												<Badge variant="secondary">
+													{account.inboxUnreadCount}
+												</Badge>
+											)}
+											{!isConfigured && (
+												<Button
+													variant="ghost"
+													size="sm"
+													shape="square"
+													icon={<TrashIcon size={16} />}
+													aria-label={`Delete mailbox ${account.email}`}
+													onClick={(e) => {
+														e.preventDefault();
+														e.stopPropagation();
+														setMailboxToDelete({
+															id: account.id,
+															email: account.email,
+														});
+														setIsDeleteOpen(true);
+													}}
+												/>
+											)}
+										</RouterLink>
+									);
+								})}
+							</div>
+						))}
+					</div>
+				) : accounts.length > 0 ? (
+					<div className="rounded-xl border border-kumo-line bg-kumo-base py-16 px-6">
+						<div className="flex flex-col items-center text-center">
+							<div className="mb-4">
+								<EnvelopeIcon
+									size={48}
+									weight="thin"
+									className="text-kumo-subtle"
+								/>
+							</div>
+							<h3 className="text-base font-semibold text-kumo-default mb-1.5">
+								No mailboxes match this tag
+							</h3>
+							<p className="text-sm text-kumo-subtle max-w-sm mb-5">
+								No mailbox is currently tagged with <code>{selectedTag}</code>.
+							</p>
+							<Button variant="secondary" onClick={() => setSelectedTag("")}>
+								Clear filter
+							</Button>
+						</div>
 					</div>
 				) : (
 					<div className="rounded-xl border border-kumo-line bg-kumo-base py-16 px-6">

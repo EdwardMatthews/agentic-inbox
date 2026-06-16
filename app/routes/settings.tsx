@@ -19,12 +19,14 @@ export default function SettingsRoute() {
 	const updateMailboxMutation = useUpdateMailbox();
 
 	const [displayName, setDisplayName] = useState("");
+	const [tags, setTags] = useState("");
 	const [agentPrompt, setAgentPrompt] = useState("");
 	const [isSaving, setIsSaving] = useState(false);
 
 	useEffect(() => {
 		if (mailbox) {
 			setDisplayName(mailbox.settings?.fromName || mailbox.name || "");
+			setTags((mailbox.settings?.tags || []).join(", "));
 			setAgentPrompt(mailbox.settings?.agentSystemPrompt || "");
 		}
 	}, [mailbox]);
@@ -32,9 +34,16 @@ export default function SettingsRoute() {
 	const handleSave = async () => {
 		if (!mailbox || !mailboxId) return;
 		setIsSaving(true);
+		const normalizedTags = [...new Set(
+			tags
+				.split(",")
+				.map((tag) => tag.trim())
+				.filter(Boolean),
+		)];
 		const settings = {
 			...mailbox.settings,
 			fromName: displayName,
+			tags: normalizedTags,
 			agentSystemPrompt: agentPrompt.trim() || undefined,
 		};
 		try {
@@ -79,6 +88,12 @@ export default function SettingsRoute() {
 							label="Display Name"
 							value={displayName}
 							onChange={(e) => setDisplayName(e.target.value)}
+						/>
+						<Input
+							label="Tags"
+							value={tags}
+							onChange={(e) => setTags(e.target.value)}
+							placeholder="vip, onboarding, support"
 						/>
 						<Input label="Email" type="email" value={mailbox.email} disabled />
 					</div>
