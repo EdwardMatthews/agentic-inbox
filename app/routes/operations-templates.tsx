@@ -5,6 +5,7 @@
 import { Badge, Button, Dialog, Empty, Input, Loader, useKumoToastManager } from "@cloudflare/kumo";
 import { EyeIcon, FilesIcon, PlusIcon, TrashIcon } from "@phosphor-icons/react";
 import { useMemo, useState } from "react";
+import EmailIframe from "~/components/EmailIframe";
 import { useMailboxes } from "~/queries/mailboxes";
 import {
 	useCreateOperationsTemplate,
@@ -26,6 +27,7 @@ export default function OperationsTemplatesRoute() {
 	const [editingTemplate, setEditingTemplate] = useState<OperationsTemplate | null>(null);
 	const [isOpen, setIsOpen] = useState(false);
 	const [preview, setPreview] = useState<{ subject: string; html: string; text: string } | null>(null);
+	const [previewMode, setPreviewMode] = useState<"rendered" | "source">("rendered");
 	const [form, setForm] = useState({
 		name: "",
 		description: "",
@@ -40,6 +42,7 @@ export default function OperationsTemplatesRoute() {
 	const openCreate = () => {
 		setEditingTemplate(null);
 		setPreview(null);
+		setPreviewMode("rendered");
 		setForm({
 			name: "",
 			description: "",
@@ -54,6 +57,7 @@ export default function OperationsTemplatesRoute() {
 	const openEdit = (template: OperationsTemplate) => {
 		setEditingTemplate(template);
 		setPreview(null);
+		setPreviewMode("rendered");
 		setForm({
 			name: template.name,
 			description: template.description || "",
@@ -115,6 +119,7 @@ export default function OperationsTemplatesRoute() {
 				trackClicks: true,
 			});
 			setPreview(result);
+			setPreviewMode("rendered");
 		} catch (e) {
 			toastManager.add({ title: (e as Error).message, variant: "error" });
 		}
@@ -249,8 +254,34 @@ export default function OperationsTemplatesRoute() {
 									<div className="text-sm text-kumo-default mt-1">{preview.subject}</div>
 								</div>
 								<div>
-									<div className="text-xs uppercase tracking-wider text-kumo-subtle font-semibold">HTML output</div>
-									<pre className="mt-1 rounded bg-kumo-base p-3 text-xs overflow-x-auto whitespace-pre-wrap">{preview.html}</pre>
+									<div className="flex items-center justify-between gap-3">
+										<div className="text-xs uppercase tracking-wider text-kumo-subtle font-semibold">
+											{previewMode === "rendered" ? "Rendered Preview" : "HTML Source"}
+										</div>
+										<div className="flex items-center gap-2">
+											<Button
+												variant={previewMode === "rendered" ? "secondary" : "ghost"}
+												size="sm"
+												onClick={() => setPreviewMode("rendered")}
+											>
+												Rendered
+											</Button>
+											<Button
+												variant={previewMode === "source" ? "secondary" : "ghost"}
+												size="sm"
+												onClick={() => setPreviewMode("source")}
+											>
+												Source
+											</Button>
+										</div>
+									</div>
+									{previewMode === "rendered" ? (
+										<div className="mt-2 rounded bg-kumo-base p-3">
+											<EmailIframe body={preview.html} autoSize />
+										</div>
+									) : (
+										<pre className="mt-2 rounded bg-kumo-base p-3 text-xs overflow-x-auto whitespace-pre-wrap">{preview.html}</pre>
+									)}
 								</div>
 								<div>
 									<div className="text-xs uppercase tracking-wider text-kumo-subtle font-semibold">Text output</div>
@@ -270,4 +301,3 @@ export default function OperationsTemplatesRoute() {
 		</div>
 	);
 }
-
