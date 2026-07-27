@@ -397,13 +397,55 @@ function renderTemplateString(template: string | null | undefined, source: Recor
 	);
 }
 
-function rewriteTrackedLinks(html: string, baseUrl: string, recipientId: string): string {
-	return html.replace(/<a\b([^>]*?)href=(["'])(.*?)\2([^>]*)>/gi, (_match, before, quote, href, after) => {
-		if (!href || href.startsWith("#") || href.startsWith("mailto:")) {
-			return `<a${before}href=${quote}${href}${quote}${after}>`;
+function decodeHtmlAttribute(value: string): string {
+	const namedEntities: Record<string, string> = {
+		amp: "&",
+		apos: "'",
+		gt: ">",
+		lt: "<",
+		quot: '"',
+	};
+
+	return value.replace(
+		/&(#(?:x[0-9a-f]+|\d+)|amp|apos|gt|lt|quot);/gi,
+		(match, entity: string) => {
+			if (!entity.startsWith("#")) {
+				return namedEntities[entity.toLowerCase()] ?? match;
+			}
+
+			const hexadecimal = entity[1]?.toLowerCase() === "x";
+			const codePoint = Number.parseInt(entity.slice(hexadecimal ? 2 : 1), hexadecimal ? 16 : 10);
+			if (
+				!Number.isInteger(codePoint) ||
+				codePoint <= 0 ||
+				codePoint > 0x10ffff ||
+				(codePoint >= 0xd800 && codePoint <= 0xdfff)
+			) {
+				return match;
+			}
+
+			return String.fromCodePoint(codePoint);
+		},
+	);
+}
+
+function escapeHtmlAttribute(value: string): string {
+	return value
+		.replaceAll("&", "&amp;")
+		.replaceAll('"', "&quot;")
+		.replaceAll("'", "&#39;")
+		.replaceAll("<", "&lt;")
+		.replaceAll(">", "&gt;");
+}
+
+export function rewriteTrackedLinks(html: string, baseUrl: string, recipientId: string): string {
+	return html.replace(/<a\b([^>]*?)href=(["'])(.*?)\2([^>]*)>/gi, (match, before, quote, href, after) => {
+		const decodedHref = decodeHtmlAttribute(href);
+		if (!decodedHref || decodedHref.startsWith("#") || decodedHref.toLowerCase().startsWith("mailto:")) {
+			return match;
 		}
-		const trackedUrl = `${baseUrl}/ops/click/${recipientId}?url=${encodeURIComponent(href)}`;
-		return `<a${before}href=${quote}${trackedUrl}${quote}${after}>`;
+		const trackedUrl = `${baseUrl}/ops/click/${recipientId}?url=${encodeURIComponent(decodedHref)}`;
+		return `<a${before}href=${quote}${escapeHtmlAttribute(trackedUrl)}${quote}${after}>`;
 	});
 }
 
