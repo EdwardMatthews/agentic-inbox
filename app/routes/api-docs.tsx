@@ -7,10 +7,11 @@ import { ArrowLeftIcon, BookOpenIcon, CopyIcon } from "@phosphor-icons/react";
 import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router";
+import { OUTBOUND_SEND_SOURCES, OUTBOUND_SEND_STATUSES } from "shared/outbound-logs";
 import api from "~/services/api";
 import { queryKeys } from "~/queries/keys";
 
-type AuthMode = "Session Cookie" | "API Key" | "Public" | "Advanced";
+type AuthMode = "Session Cookie" | "Admin Session Cookie" | "API Key" | "Public" | "Advanced";
 
 interface EndpointDoc {
 	method: string;
@@ -527,6 +528,20 @@ defer resp.Body.Close()`,
 			{ method: "POST", path: "/api/v1/operations/campaigns/:campaignId/cancel", auth: "Session Cookie", title: "Cancel campaign", description: "Cancels unsent recipients." },
 			{ method: "GET", path: "/api/v1/operations/campaigns/:campaignId/recipients", auth: "Session Cookie", title: "List campaign recipients", description: "Supports page and limit." },
 			{ method: "GET", path: "/api/v1/operations/events", auth: "Session Cookie", title: "List events", description: "Supports campaignId, customerId, eventType, page, and limit." },
+			{
+				method: "GET",
+				path: "/api/v1/operations/send-logs",
+				auth: "Admin Session Cookie",
+				title: "List outbound send logs",
+				description: "Returns { logs, totalCount } for outbound send attempts recorded since rollout, newest first. Each log includes the internal message ID, mailbox ID, source, To/Cc/Bcc recipients, status, start and completion times, provider message ID, and error code. No subject or body is returned. Accepted means the provider accepted the send, not that it was delivered. Pending means the outcome is not confirmed.",
+				query: [
+					"mailboxId? (email address; exact, case-insensitive match)",
+					`status? (${OUTBOUND_SEND_STATUSES.join(" | ")})`,
+					`source? (${OUTBOUND_SEND_SOURCES.join(" | ")})`,
+					"page? (integer 1-1,000,000, default 1)",
+					"limit? (integer 1-100, default 50)",
+				],
+			},
 			{ method: "GET", path: "/api/v1/operations/webhooks", auth: "Session Cookie", title: "List webhooks", description: "Lists event callback subscriptions." },
 			{ method: "POST", path: "/api/v1/operations/webhooks", auth: "Session Cookie", title: "Create webhook", description: "Creates a webhook subscription.", body: ["name", "url", "secret?", "eventTypes?", "enabled?"] },
 			{ method: "PUT", path: "/api/v1/operations/webhooks/:webhookId", auth: "Session Cookie", title: "Update webhook", description: "Updates webhook config.", body: ["name?", "url?", "secret?", "eventTypes?", "enabled?"] },

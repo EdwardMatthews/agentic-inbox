@@ -3,6 +3,7 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 import { DurableObject } from "cloudflare:workers";
+import type { OutboundSendLog, OutboundSendLogPage, OutboundSendSource, OutboundSendStatus } from "../../shared/outbound-logs";
 import { sendEmail } from "../email-sender";
 import { storeAttachments } from "../lib/attachments";
 import { generateMessageId } from "../lib/email-helpers";
@@ -352,6 +353,28 @@ const operationsMigrations: Migration[] = [
 			CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
 			CREATE INDEX IF NOT EXISTS idx_memberships_user ON mailbox_memberships(user_id);
 			CREATE INDEX IF NOT EXISTS idx_memberships_mailbox ON mailbox_memberships(mailbox_id);
+		`,
+	},
+	{
+		name: "4_operations_outbound_send_logs",
+		sql: `
+			CREATE TABLE outbound_send_logs (
+				id TEXT PRIMARY KEY,
+				mailbox_id TEXT NOT NULL,
+				source TEXT NOT NULL,
+				to_json TEXT NOT NULL,
+				cc_json TEXT NOT NULL,
+				bcc_json TEXT NOT NULL,
+				status TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'failed')),
+				started_at TEXT NOT NULL,
+				completed_at TEXT,
+				provider_message_id TEXT,
+				error_code TEXT
+			);
+			CREATE INDEX idx_outbound_logs_started ON outbound_send_logs(started_at DESC, id DESC);
+			CREATE INDEX idx_outbound_logs_mailbox ON outbound_send_logs(mailbox_id, started_at DESC, id DESC);
+			CREATE INDEX idx_outbound_logs_status ON outbound_send_logs(status, started_at DESC, id DESC);
+			CREATE INDEX idx_outbound_logs_source ON outbound_send_logs(source, started_at DESC, id DESC);
 		`,
 	},
 ];
@@ -992,35 +1015,6 @@ export class OperationsDO extends DurableObject<Env> {
 		}
 
 		const mailboxStub = this.env.MAILBOX.get(this.env.MAILBOX.idFromName(campaign.mailbox_id));
-		const rateLimitError = await (mailboxStub as unknown as {
-			checkSendRateLimit: () => Promise<string | null>;
-		}).checkSendRateLimit();
-
-		if (rateLimitError) {
-			const retryAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
-			this.run(
-				`UPDATE campaign_recipients
-				 SET status = 'scheduled',
-				     scheduled_at = ?2,
-				     error_message = ?3,
-				     updated_at = ?4
-				 WHERE id = ?1`,
-				recipient.id,
-				retryAt,
-				rateLimitError,
-				nowIso(),
-			);
-			await this.recordEvent({
-				campaignId: campaign.id,
-				recipientId: recipient.id,
-				customerId: customer.id,
-				mailboxId: campaign.mailbox_id,
-				eventType: "send_rate_limited",
-				email: customer.email,
-				payload: { retryAt, reason: rateLimitError },
-			});
-			return;
-		}
 
 		const fromDomain = campaign.mailbox_id.split("@")[1];
 		if (!fromDomain) {
@@ -1068,13 +1062,13 @@ export class OperationsDO extends DurableObject<Env> {
 		});
 
 		try {
-			const result = await sendEmail(this.env.EMAIL, {
+			const result = await sendEmail(this.env, {
 				to: customer.email,
 				from,
 				subject,
 				html,
 				text,
-			});
+			}, { id: messageId, mailboxId: campaign.mailbox_id, source: "campaign" }, (entry) => this.writeOutboundSendLog(entry));
 
 			await (mailboxStub as unknown as {
 				createEmail: (
@@ -1733,6 +1727,66 @@ export class OperationsDO extends DurableObject<Env> {
 		};
 	}
 
+	async writeOutboundSendLog(entry: OutboundSendLog) {
+		this.run(
+			`INSERT INTO outbound_send_logs (
+				id, mailbox_id, source, to_json, cc_json, bcc_json, status, started_at,
+				completed_at, provider_message_id, error_code
+			) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+			ON CONFLICT(id) DO UPDATE SET
+				status = excluded.status, completed_at = excluded.completed_at,
+				provider_message_id = excluded.provider_message_id, error_code = excluded.error_code
+			WHERE outbound_send_logs.status = 'pending' AND excluded.status != 'pending'`,
+			entry.id,
+			entry.mailboxId,
+			entry.source,
+			JSON.stringify(entry.to),
+			JSON.stringify(entry.cc),
+			JSON.stringify(entry.bcc),
+			entry.status,
+			entry.startedAt,
+			entry.completedAt,
+			entry.providerMessageId,
+			entry.errorCode,
+		);
+	}
+
+	async listOutboundSendLogs(options: {
+		mailboxId?: string;
+		source?: OutboundSendSource;
+		status?: OutboundSendStatus;
+		page: number;
+		limit: number;
+	}): Promise<OutboundSendLogPage> {
+		const { mailboxId, source, status, page, limit } = options;
+		const params: (string | number)[] = [];
+		const conditions: string[] = [];
+		for (const [column, value] of [["mailbox_id", mailboxId], ["source", source], ["status", status]] as const) {
+			if (value !== undefined) {
+				params.push(value);
+				conditions.push(`${column} = ?${params.length}`);
+			}
+		}
+		const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+		type Row = Omit<OutboundSendLog, "to" | "cc" | "bcc"> & { toJson: string; ccJson: string; bccJson: string };
+		const logs = this.rows<Row>(
+			`SELECT id, mailbox_id AS mailboxId, source, status, started_at AS startedAt,
+				completed_at AS completedAt, provider_message_id AS providerMessageId, error_code AS errorCode,
+				to_json AS toJson, cc_json AS ccJson, bcc_json AS bccJson
+			 FROM outbound_send_logs ${where}
+			 ORDER BY started_at DESC, id DESC
+			 LIMIT ?${params.length + 1} OFFSET ?${params.length + 2}`,
+			...params, limit, (page - 1) * limit,
+		).map(({ toJson, ccJson, bccJson, ...row }): OutboundSendLog => ({
+			...row,
+			to: parseJson<string[]>(toJson, []),
+			cc: parseJson<string[]>(ccJson, []),
+			bcc: parseJson<string[]>(bccJson, []),
+		}));
+		const count = this.row<{ total: number }>(`SELECT COUNT(*) AS total FROM outbound_send_logs ${where}`, ...params);
+		return { logs, totalCount: count?.total ?? 0 };
+	}
+
 	async listWebhooks() {
 		return this.rows<Record<string, unknown>>(
 			`SELECT * FROM webhook_subscriptions ORDER BY created_at DESC`,
@@ -2100,12 +2154,6 @@ export class OperationsDO extends DurableObject<Env> {
 		}
 
 		const mailboxStub = this.env.MAILBOX.get(this.env.MAILBOX.idFromName(payload.mailboxId));
-		const rateLimitError = await (mailboxStub as unknown as {
-			checkSendRateLimit: () => Promise<string | null>;
-		}).checkSendRateLimit();
-		if (rateLimitError) {
-			throw new Error(rateLimitError);
-		}
 
 		const template = payload.templateId ? await this.getTemplate(payload.templateId) : null;
 		if (payload.templateId && !template) {
@@ -2150,7 +2198,7 @@ export class OperationsDO extends DurableObject<Env> {
 		const sentAt = nowIso();
 		const attachmentData = await storeAttachments(this.env.BUCKET, messageId, payload.attachments);
 
-		const sendResult = await sendEmail(this.env.EMAIL, {
+		const sendResult = await sendEmail(this.env, {
 			to: payload.to,
 			cc: payload.cc,
 			bcc: payload.bcc,
@@ -2167,7 +2215,7 @@ export class OperationsDO extends DurableObject<Env> {
 			html: rendered.html || undefined,
 			text: rendered.text || undefined,
 			attachments: payload.attachments,
-		});
+		}, { id: messageId, mailboxId: payload.mailboxId, source: "transactional" }, (entry) => this.writeOutboundSendLog(entry));
 
 		await (mailboxStub as unknown as {
 			createEmail: (

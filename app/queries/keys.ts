@@ -32,6 +32,7 @@ export const queryKeys = {
 		campaign: (campaignId: string) => ["operations", "campaigns", campaignId] as const,
 		recipients: (campaignId: string, page: number) => ["operations", "campaigns", campaignId, "recipients", page] as const,
 		events: (filters: Record<string, string | number | undefined>) => ["operations", "events", filters] as const,
+		sendLogs: (params: Record<string, string>) => ["operations", "send-logs", params] as const,
 		webhooks: ["operations", "webhooks"] as const,
 	},
 	config: ["config"] as const,

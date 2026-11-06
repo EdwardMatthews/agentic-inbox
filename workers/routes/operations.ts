@@ -4,6 +4,8 @@
 
 import { Hono } from "hono";
 import { z } from "zod";
+import { OUTBOUND_SEND_SOURCES, OUTBOUND_SEND_STATUSES } from "../../shared/outbound-logs";
+import { requireGlobalAdmin, type AppAuthContext } from "../lib/auth-middleware";
 import type { Env } from "../types";
 
 const customerSchema = z.object({
@@ -75,6 +77,14 @@ const templatePreviewSchema = z.object({
 	trackClicks: z.boolean().optional(),
 });
 
+const sendLogsQuery = z.object({
+	mailboxId: z.string().trim().email().toLowerCase().optional(),
+	source: z.enum(OUTBOUND_SEND_SOURCES).optional(),
+	status: z.enum(OUTBOUND_SEND_STATUSES).optional(),
+	page: z.coerce.number().int().min(1).max(1_000_000).default(1),
+	limit: z.coerce.number().int().min(1).max(100).default(50),
+});
+
 function operationsStub(env: Env) {
 	return env.OPERATIONS.get(env.OPERATIONS.idFromName("global"));
 }
@@ -123,7 +133,7 @@ function intQuery(value: string | undefined, fallback: number) {
 	return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-export const operationsRouter = new Hono<{ Bindings: Env }>();
+export const operationsRouter = new Hono<AppAuthContext>();
 
 operationsRouter.get("/customers", async (c) => {
 	const result = await ops(c.env).listCustomers({
@@ -255,6 +265,14 @@ operationsRouter.get("/events", async (c) => {
 		page: intQuery(c.req.query("page"), 1),
 		limit: intQuery(c.req.query("limit"), 50),
 	}));
+});
+
+operationsRouter.get("/send-logs", async (c) => {
+	c.header("Cache-Control", "private, no-store");
+	if (!requireGlobalAdmin(c)) return c.json({ error: "Forbidden" }, 403);
+	const filters = sendLogsQuery.safeParse(c.req.query());
+	if (!filters.success) return c.json({ error: "Invalid send log filters" }, 400);
+	return c.json(await operationsStub(c.env).listOutboundSendLogs(filters.data));
 });
 
 operationsRouter.get("/webhooks", async (c) => {

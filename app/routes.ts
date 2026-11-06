@@ -20,6 +20,7 @@ export default [
 		route("customers", "routes/operations-customers.tsx"),
 		route("templates", "routes/operations-templates.tsx"),
 		route("events", "routes/operations-events.tsx"),
+		route("send-logs", "routes/operations-send-logs.tsx"),
 		route("webhooks", "routes/operations-webhooks.tsx"),
 	]),
 	route("mailbox/:mailboxId", "routes/mailbox.tsx", [

@@ -2,6 +2,7 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
+import type { OutboundSendLogPage } from "shared/outbound-logs";
 import type { Email, Folder, Mailbox } from "~/types";
 import type {
 	ManagedApiKey,
@@ -229,6 +230,10 @@ const api = {
 	// Operations: Events
 	listOperationsEvents: (params: Record<string, string>) =>
 		get<{ events: OperationsEvent[]; totalCount: number }>("/api/v1/operations/events", { params }),
+
+	// Operations: Send Logs
+	listOperationsSendLogs: (params: Record<string, string>, signal?: AbortSignal) =>
+		get<OutboundSendLogPage>("/api/v1/operations/send-logs", { params, signal }),
 
 	// Operations: Webhooks
 	listOperationsWebhooks: () =>

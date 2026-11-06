@@ -10,6 +10,10 @@
  * See: https://developers.cloudflare.com/email-service/api/send-emails/workers-api/
  */
 
+import type { OutboundSendLog } from "../shared/outbound-logs";
+import { getOperationsStub } from "./lib/operations";
+import type { Env } from "./types";
+
 export interface SendEmailParams {
 	to: string | string[];
 	from: string | { email: string; name: string };
@@ -29,17 +33,27 @@ export interface SendEmailParams {
 	headers?: Record<string, string>;
 }
 
+type SendContext = Pick<OutboundSendLog, "id" | "mailboxId" | "source">;
+type WriteLog = (entry: OutboundSendLog) => Promise<void>;
+
+function logAddresses(addresses?: string | string[]): string[] {
+	const list = typeof addresses === "string" ? [addresses] : addresses ?? [];
+	return list.slice(0, 50).map((address) => address.slice(0, 254));
+}
+
+function errorCode(error: unknown): string {
+	const code = typeof error === "object" && error && "code" in error ? error.code : null;
+	return typeof code === "string" && /^E_[A-Z0-9_]{1,64}$/.test(code) ? code : "UNKNOWN";
+}
+
 /**
- * Send an email using the Cloudflare Email Service binding.
- *
- * @param binding  - The `EMAIL` SendEmail binding from env
- * @param params   - Email parameters (to, from, subject, body, etc.)
- * @returns The send result with messageId
- * @throws On validation or delivery errors (error has `.code` property)
+ * Record the provider attempt separately from the mailbox's Sent copy.
  */
 export async function sendEmail(
-	binding: SendEmail,
+	env: Env,
 	params: SendEmailParams,
+	context: SendContext,
+	writeLog: WriteLog = (entry) => getOperationsStub(env).writeOutboundSendLog(entry),
 ): Promise<{ messageId: string }> {
 	const message: Record<string, unknown> = {
 		to: params.to,
@@ -67,6 +81,46 @@ export async function sendEmail(
 		}));
 	}
 
-	const result = await binding.send(message as any);
-	return { messageId: result.messageId };
+	const entry: OutboundSendLog = {
+		...context,
+		mailboxId: context.mailboxId.toLowerCase(),
+		to: logAddresses(params.to),
+		cc: logAddresses(params.cc),
+		bcc: logAddresses(params.bcc),
+		status: "pending",
+		startedAt: new Date().toISOString(),
+		completedAt: null,
+		providerMessageId: null,
+		errorCode: null,
+	};
+	const persist = async (log: OutboundSendLog) => {
+		try {
+			await writeLog(log);
+		} catch {
+			// Logging must not turn an accepted send into a retryable error.
+			console.warn("Outbound send log write failed", { id: log.id, source: log.source, status: log.status });
+		}
+	};
+
+	await persist(entry);
+	let providerMessageId: string;
+	try {
+		const result = await env.EMAIL.send(message as any);
+		if (!result?.messageId) {
+			throw Object.assign(new Error("Email provider did not return a message ID"), {
+				code: "E_MISSING_PROVIDER_MESSAGE_ID",
+			});
+		}
+		providerMessageId = result.messageId;
+	} catch (error) {
+		await persist({ ...entry, status: "failed", completedAt: new Date().toISOString(), errorCode: errorCode(error) });
+		throw error;
+	}
+	await persist({
+		...entry,
+		status: "accepted",
+		completedAt: new Date().toISOString(),
+		providerMessageId,
+	});
+	return { messageId: providerMessageId };
 }

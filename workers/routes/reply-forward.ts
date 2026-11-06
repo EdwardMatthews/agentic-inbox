@@ -20,7 +20,6 @@ import { Folders } from "../../shared/folders";
 import type { MailboxContext } from "../lib/mailbox";
 
 type AppContext = Context<MailboxContext>;
-type RateLimitStub = { checkSendRateLimit: () => Promise<string | null> };
 
 export async function handleReplyEmail(c: AppContext) {
 	if (!(c.var.auth.user?.globalRole === "admin" || hasMailboxRole(c.var.mailboxRole, "editor"))) {
@@ -50,12 +49,6 @@ export async function handleReplyEmail(c: AppContext) {
 	}
 
 	const { messageId, outgoingMessageId } = generateMessageId(fromDomain);
-
-	const rateLimitError = await (stub as unknown as RateLimitStub)
-		.checkSendRateLimit();
-	if (rateLimitError) {
-		return c.json({ error: rateLimitError }, 429);
-	}
 
 	const attachmentData = await storeAttachments(c.env.BUCKET, messageId, attachments);
 
@@ -92,7 +85,7 @@ export async function handleReplyEmail(c: AppContext) {
 	await stub.markThreadRead(thread_id);
 
 	c.executionCtx.waitUntil(
-		sendEmail(c.env.EMAIL, {
+		sendEmail(c.env, {
 			to,
 			cc,
 			bcc,
@@ -108,7 +101,7 @@ export async function handleReplyEmail(c: AppContext) {
 				contentId: att.contentId,
 			})),
 			headers: buildThreadingHeaders(originalMsgId, references),
-		}).catch((e) => {
+		}, { id: messageId, mailboxId, source: "reply" }).catch((e) => {
 			console.error("Deferred reply delivery failed:", (e as Error).message);
 		}),
 	);
@@ -144,12 +137,6 @@ export async function handleForwardEmail(c: AppContext) {
 
 	const { messageId, outgoingMessageId } = generateMessageId(fromDomain);
 
-	const rateLimitError = await (stub as unknown as RateLimitStub)
-		.checkSendRateLimit();
-	if (rateLimitError) {
-		return c.json({ error: rateLimitError }, 429);
-	}
-
 	const attachmentData = await storeAttachments(c.env.BUCKET, messageId, attachments);
 
 	await stub.createEmail(
@@ -181,7 +168,7 @@ export async function handleForwardEmail(c: AppContext) {
 	);
 
 	c.executionCtx.waitUntil(
-		sendEmail(c.env.EMAIL, {
+		sendEmail(c.env, {
 			to,
 			cc,
 			bcc,
@@ -196,7 +183,7 @@ export async function handleForwardEmail(c: AppContext) {
 				disposition: att.disposition,
 				contentId: att.contentId,
 			})),
-		}).catch((e) => {
+		}, { id: messageId, mailboxId, source: "forward" }).catch((e) => {
 			console.error("Deferred forward delivery failed:", (e as Error).message);
 		}),
 	);

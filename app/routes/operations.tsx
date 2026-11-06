@@ -10,6 +10,7 @@ import {
 	EnvelopeSimpleOpenIcon,
 	FilesIcon,
 	HouseIcon,
+	PaperPlaneTiltIcon,
 	UsersIcon,
 	WebhooksLogoIcon,
 } from "@phosphor-icons/react";
@@ -20,6 +21,7 @@ const NAV_ITEMS = [
 	{ to: "/operations/customers", label: "Customers", icon: <UsersIcon size={16} /> },
 	{ to: "/operations/templates", label: "Templates", icon: <FilesIcon size={16} /> },
 	{ to: "/operations/events", label: "Events", icon: <EnvelopeSimpleOpenIcon size={16} /> },
+	{ to: "/operations/send-logs", label: "Send Logs", icon: <PaperPlaneTiltIcon size={16} /> },
 	{ to: "/operations/webhooks", label: "Webhooks", icon: <WebhooksLogoIcon size={16} /> },
 ];
 
@@ -27,8 +29,8 @@ export default function OperationsRoute() {
 	const navigate = useNavigate();
 
 	return (
-		<div className="flex min-h-screen bg-kumo-recessed">
-			<aside className="flex min-h-screen w-72 shrink-0 flex-col border-r border-kumo-line bg-kumo-base">
+		<div className="flex min-h-screen flex-col bg-kumo-recessed lg:flex-row">
+			<aside className="flex shrink-0 flex-col border-b border-kumo-line bg-kumo-base lg:min-h-screen lg:w-72 lg:border-r lg:border-b-0">
 				<div className="p-5 border-b border-kumo-line">
 					<div className="flex items-center justify-between gap-3">
 						<div>
@@ -46,7 +48,7 @@ export default function OperationsRoute() {
 					</p>
 				</div>
 
-				<div className="p-3 space-y-1">
+				<nav aria-label="Operations" className="flex flex-wrap gap-1 p-3 lg:flex-col">
 					{NAV_ITEMS.map((item) => (
 						<NavLink
 							key={item.to}
@@ -63,10 +65,10 @@ export default function OperationsRoute() {
 							<span>{item.label}</span>
 						</NavLink>
 					))}
-				</div>
+				</nav>
 
 				<div className="mt-auto p-3 border-t border-kumo-line">
-					<div className="space-y-2">
+					<div className="grid grid-cols-2 gap-2 lg:grid-cols-1">
 						<Button
 							variant="secondary"
 							size="sm"
@@ -89,7 +91,7 @@ export default function OperationsRoute() {
 			</aside>
 
 			<div className="flex-1 min-w-0">
-				<header className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-kumo-line bg-kumo-base px-6 py-4">
+				<header className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-kumo-line bg-kumo-base px-4 py-4 sm:px-6">
 					<div>
 						<div className="text-sm font-medium text-kumo-default">
 							Operations Console
@@ -107,7 +109,7 @@ export default function OperationsRoute() {
 						Refresh
 					</Button>
 				</header>
-				<main className="p-6">
+				<main className="p-4 sm:p-6">
 					<Outlet />
 				</main>
 			</div>

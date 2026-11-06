@@ -175,6 +175,15 @@ export function useOperationsEvents(params: Record<string, string>) {
 	});
 }
 
+export function useOperationsSendLogs(params: Record<string, string>) {
+	return useQuery({
+		queryKey: queryKeys.operations.sendLogs(params),
+		queryFn: ({ signal }) => api.listOperationsSendLogs(params, signal),
+		// Do not retain recipient metadata after leaving the page or changing filters.
+		gcTime: 0,
+	});
+}
+
 export function useOperationsWebhooks() {
 	return useQuery<OperationsWebhook[]>({
 		queryKey: queryKeys.operations.webhooks,
