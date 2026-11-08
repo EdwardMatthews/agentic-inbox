@@ -3,8 +3,11 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 import type { MiddlewareHandler } from "hono";
+import { matchApiKeyEndpoint } from "../../shared/api-permissions";
+import { extractApiKey, hasApiKeyCredentials } from "./api-key";
 import {
 	extractSessionToken,
+	hasMailboxRole,
 	isApiRequest,
 	isMutationMethod,
 	isSameOrigin,
@@ -23,6 +26,8 @@ type AuthStub = {
 	getSessionByToken: (rawToken: string) => Promise<{ user: AuthUser; session: AuthSession } | null>;
 	getMailboxRole: (userId: string, globalRole: GlobalRole, mailboxId: string) => Promise<MailboxRole | null>;
 	getAccessibleMailboxIds: (userId: string, globalRole: GlobalRole) => Promise<string[] | null>;
+	authenticateApiKey: (rawKey: string) => Promise<{ id: string; scopes: string[]; allowed_mailboxes: string[] } | null>;
+	recordApiKeyUse: (apiKeyId: string) => Promise<void>;
 };
 
 function authStub(env: Env): AuthStub {
@@ -101,6 +106,25 @@ export const authMiddleware: MiddlewareHandler<AppAuthContext> = async (c, next)
 	const path = c.req.path;
 	const stub = authStub(c.env);
 	const bootstrapRequired = (await stub.countUsers()) === 0;
+	// The transactional route retains its own legacy scope and allowlist check.
+	if (path !== "/api/v1/transactional/send" && hasApiKeyCredentials(c.req.raw)) {
+		c.header("Cache-Control", "private, no-store");
+		const rawKey = extractApiKey(c.req.raw);
+		const key = rawKey && !bootstrapRequired ? await stub.authenticateApiKey(rawKey) : null;
+		if (!key) return unauthorizedResponse(c.req.raw, bootstrapRequired);
+		const permission = matchApiKeyEndpoint(c.req.method, path);
+		if (!permission || !key.scopes.includes(permission.scope)) return forbiddenResponse(c.req.raw);
+		if (permission.mailboxId && key.allowed_mailboxes.length && !key.allowed_mailboxes.includes(permission.mailboxId)) {
+			return forbiddenResponse(c.req.raw);
+		}
+		c.set("auth", {
+			method: "api_key", user: null, session: null, apiKeyId: key.id,
+			allowedMailboxIds: key.allowed_mailboxes.length ? key.allowed_mailboxes : null,
+			scopes: key.scopes,
+		});
+		await stub.recordApiKeyUse(key.id);
+		return next();
+	}
 	const sessionToken = extractSessionToken(c.req.raw);
 	const sessionResult = sessionToken ? await stub.getSessionByToken(sessionToken) : null;
 
@@ -153,4 +177,10 @@ export const authMiddleware: MiddlewareHandler<AppAuthContext> = async (c, next)
 
 export function requireGlobalAdmin(c: { var: { auth: AuthContext } }) {
 	return c.var.auth.user?.globalRole === "admin";
+}
+
+export function canSendMailbox(c: { var: { auth: AuthContext; mailboxRole?: MailboxRole | null } }) {
+	return c.var.auth.method === "api_key"
+		? c.var.auth.scopes.includes("emails:send")
+		: c.var.auth.user?.globalRole === "admin" || hasMailboxRole(c.var.mailboxRole, "editor");
 }

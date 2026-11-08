@@ -5,7 +5,7 @@
 import type { Context } from "hono";
 import { sendEmail } from "../email-sender";
 import { storeAttachments } from "../lib/attachments";
-import { hasMailboxRole } from "../lib/auth";
+import { canSendMailbox } from "../lib/auth-middleware";
 import type { EmailFull } from "../lib/schemas";
 import {
 	validateSender,
@@ -22,7 +22,7 @@ import type { MailboxContext } from "../lib/mailbox";
 type AppContext = Context<MailboxContext>;
 
 export async function handleReplyEmail(c: AppContext) {
-	if (!(c.var.auth.user?.globalRole === "admin" || hasMailboxRole(c.var.mailboxRole, "editor"))) {
+	if (!canSendMailbox(c)) {
 		return c.json({ error: "Forbidden" }, 403);
 	}
 	const mailboxId = c.req.param("mailboxId") ?? "";
@@ -82,7 +82,9 @@ export async function handleReplyEmail(c: AppContext) {
 		attachmentData,
 	);
 
-	await stub.markThreadRead(thread_id);
+	if (c.var.auth.method === "session") {
+		await stub.markThreadRead(thread_id);
+	}
 
 	c.executionCtx.waitUntil(
 		sendEmail(c.env, {
@@ -110,7 +112,7 @@ export async function handleReplyEmail(c: AppContext) {
 }
 
 export async function handleForwardEmail(c: AppContext) {
-	if (!(c.var.auth.user?.globalRole === "admin" || hasMailboxRole(c.var.mailboxRole, "editor"))) {
+	if (!canSendMailbox(c)) {
 		return c.json({ error: "Forbidden" }, 403);
 	}
 	const mailboxId = c.req.param("mailboxId") ?? "";

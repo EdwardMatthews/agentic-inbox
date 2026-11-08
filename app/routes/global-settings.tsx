@@ -6,6 +6,7 @@ import { Badge, Button, Dialog, Empty, Input, Loader, useKumoToastManager } from
 import { ArrowLeftIcon, CopyIcon, KeyIcon, PlusIcon, TrashIcon } from "@phosphor-icons/react";
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router";
+import { API_KEY_SCOPES, API_KEY_SCOPE_DETAILS, type ApiKeyScope } from "shared/api-permissions";
 import { useLogout } from "~/queries/auth";
 import { useMailboxes } from "~/queries/mailboxes";
 import { useApiKeys, useCreateApiKey, useRevokeApiKey } from "~/queries/global-settings";
@@ -39,9 +40,10 @@ export default function GlobalSettingsRoute() {
 	const [createdKey, setCreatedKey] = useState<ManagedApiKeyCreateResult | null>(null);
 	const [isUserOpen, setIsUserOpen] = useState(false);
 	const [editingUser, setEditingUser] = useState<UserWithMemberships | null>(null);
-	const [form, setForm] = useState({
+	const [scopeError, setScopeError] = useState(false);
+	const [form, setForm] = useState<{ name: string; scopes: ApiKeyScope[]; allowedMailboxes: string }>({
 		name: "",
-		scopes: "transactional:send",
+		scopes: ["transactional:send"],
 		allowedMailboxes: "",
 	});
 	const [userForm, setUserForm] = useState({
@@ -54,17 +56,20 @@ export default function GlobalSettingsRoute() {
 		mailboxRole: "viewer",
 	});
 
-	const scopeOptions = ["transactional:send"];
-
 	const saveApiKey = async () => {
+		if (form.scopes.length === 0) {
+			setScopeError(true);
+			return;
+		}
 		try {
 			const result = await createApiKey.mutateAsync({
 				name: form.name,
-				scopes: form.scopes.split(",").map((value) => value.trim()).filter(Boolean),
+				scopes: form.scopes,
 				allowedMailboxes: form.allowedMailboxes.split(",").map((value) => value.trim()).filter(Boolean),
 			});
 			setCreatedKey(result);
-			setForm({ name: "", scopes: "transactional:send", allowedMailboxes: "" });
+			setForm({ name: "", scopes: ["transactional:send"], allowedMailboxes: "" });
+			setScopeError(false);
 			toastManager.add({ title: "API key created" });
 		} catch (e) {
 			toastManager.add({ title: (e as Error).message, variant: "error" });
@@ -180,7 +185,7 @@ export default function GlobalSettingsRoute() {
 						</Button>
 						<h1 className="mt-4 text-2xl font-bold text-kumo-default">Global Settings</h1>
 						<p className="mt-2 text-sm text-kumo-subtle max-w-2xl">
-							Manage machine-to-machine API keys for external applications that need to send transactional mail through Agentic Inbox.
+							Manage scoped API keys for external applications that need to browse mailboxes, read email, or send mail through Agentic Inbox.
 						</p>
 					</div>
 					<div className="flex items-center gap-2">
@@ -203,9 +208,12 @@ export default function GlobalSettingsRoute() {
 				</div>
 
 				<div className="rounded-xl border border-kumo-line bg-kumo-base p-5 mb-6">
-					<h2 className="text-sm font-semibold text-kumo-default">Transactional API</h2>
+					<h2 className="text-sm font-semibold text-kumo-default">Mailbox API access</h2>
 					<p className="text-sm text-kumo-subtle mt-2">
-						External apps should call <code>/api/v1/transactional/send</code> with either <code>Authorization: Bearer &lt;api-key&gt;</code> or <code>X-Agentic-Inbox-Api-Key</code>.
+						External apps authenticate with <code>Authorization: Bearer &lt;api-key&gt;</code> or <code>X-Agentic-Inbox-Api-Key: &lt;api-key&gt;</code>. Select only the scopes each app needs.
+					</p>
+					<p className="text-sm text-kumo-subtle mt-2">
+						An empty mailbox whitelist allows all existing mailboxes, within the selected scopes. Scopes never grant admin access to users, settings, or Operations, or access to the UI or MCP.
 					</p>
 				</div>
 
@@ -223,11 +231,9 @@ export default function GlobalSettingsRoute() {
 											<Badge key={scope} variant="secondary">{scope}</Badge>
 										))}
 									</div>
-									{apiKey.allowed_mailboxes.length > 0 && (
-										<div className="text-xs text-kumo-subtle mt-2 break-all">
-											Allowed mailboxes: {apiKey.allowed_mailboxes.join(", ")}
-										</div>
-									)}
+									<div className="text-xs text-kumo-subtle mt-2 break-all">
+										Allowed mailboxes: {apiKey.allowed_mailboxes.length > 0 ? apiKey.allowed_mailboxes.join(", ") : "All existing mailboxes (within selected scopes)"}
+									</div>
 								</div>
 								<div className="text-sm text-kumo-subtle">
 									<div className="font-medium text-kumo-strong">Last used</div>
@@ -259,7 +265,7 @@ export default function GlobalSettingsRoute() {
 					<Empty
 						icon={<KeyIcon size={48} className="text-kumo-subtle" />}
 						title="No API keys yet"
-						description="Create an API key for a trusted external service, then use it to call the transactional send endpoint."
+						description="Create an API key for a trusted external service and select its mailbox and send permissions."
 						contents={
 							<Button variant="primary" icon={<PlusIcon size={16} />} onClick={() => setIsOpen(true)}>
 								Create API key
@@ -382,10 +388,38 @@ export default function GlobalSettingsRoute() {
 					<Dialog.Title className="text-base font-semibold mb-5">Create API key</Dialog.Title>
 					<div className="space-y-4">
 						<Input label="Name" placeholder="My backend app" value={form.name} onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))} />
-						<Input label="Scopes" value={form.scopes} onChange={(e) => setForm((prev) => ({ ...prev, scopes: e.target.value }))} />
-						<div className="text-xs text-kumo-subtle">
-							Available scopes: {scopeOptions.join(", ")}
-						</div>
+						<fieldset aria-describedby="api-key-scopes-help" aria-invalid={scopeError}>
+							<legend className="text-sm font-medium text-kumo-default">Scopes</legend>
+							<p id="api-key-scopes-help" className="mt-1 text-xs text-kumo-subtle">
+								Select at least one permission. These scopes do not grant admin access or permission to save drafts, change flags, delete or move mail, or manage folders.
+							</p>
+							<div className="mt-3 space-y-2">
+								{API_KEY_SCOPES.map((scope) => (
+									<label key={scope} className="flex cursor-pointer items-start gap-3 rounded-lg border border-kumo-line bg-kumo-recessed p-3">
+										<input
+											type="checkbox"
+											value={scope}
+											checked={form.scopes.includes(scope)}
+											className="mt-1 h-4 w-4 shrink-0 accent-current"
+											onChange={(e) => {
+												const checked = e.target.checked;
+												setForm((prev) => ({
+													...prev,
+													scopes: API_KEY_SCOPES.filter((value) => value === scope ? checked : prev.scopes.includes(value)),
+												}));
+												setScopeError(false);
+											}}
+										/>
+										<span className="min-w-0">
+											<span className="block text-sm font-medium text-kumo-default">{API_KEY_SCOPE_DETAILS[scope].label}</span>
+											<code className="text-xs text-kumo-subtle">{scope}</code>
+											<span className="mt-1 block text-xs text-kumo-subtle">{API_KEY_SCOPE_DETAILS[scope].description}</span>
+										</span>
+									</label>
+								))}
+							</div>
+							{scopeError && <p role="alert" className="mt-2 text-sm text-kumo-default">Select at least one scope before creating an API key.</p>}
+						</fieldset>
 						<Input
 							label="Allowed mailboxes"
 							placeholder={suggestedMailboxList || "noreply@example.com"}
@@ -393,7 +427,7 @@ export default function GlobalSettingsRoute() {
 							onChange={(e) => setForm((prev) => ({ ...prev, allowedMailboxes: e.target.value }))}
 						/>
 						<div className="text-xs text-kumo-subtle">
-							Leave empty to allow all mailboxes. Otherwise provide a comma-separated allowlist.
+							Leave empty to allow all existing mailboxes within the selected scopes. Otherwise provide a comma-separated whitelist of mailbox email addresses. The list is filtered to these mailboxes, and every mailbox path and transactional send mailboxId must be whitelisted.
 						</div>
 
 						{createdKey && (

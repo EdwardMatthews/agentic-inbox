@@ -17,7 +17,7 @@ import {
 } from "./lib/email-helpers";
 import { SendEmailRequestSchema } from "./lib/schemas";
 import { hasMailboxRole } from "./lib/auth";
-import { requireGlobalAdmin } from "./lib/auth-middleware";
+import { canSendMailbox, requireGlobalAdmin } from "./lib/auth-middleware";
 import { globalSettingsRouter } from "./routes/global-settings";
 import { transactionalRouter } from "./routes/transactional";
 import { handleReplyEmail, handleForwardEmail } from "./routes/reply-forward";
@@ -224,7 +224,7 @@ app.get("/api/v1/mailboxes/:mailboxId/emails", async (c: AppContext) => {
 });
 
 app.post("/api/v1/mailboxes/:mailboxId/emails", async (c: AppContext) => {
-	if (!canEditMailbox(c)) return c.json({ error: "Forbidden" }, 403);
+	if (!canSendMailbox(c)) return c.json({ error: "Forbidden" }, 403);
 	const mailboxId = c.req.param("mailboxId")!;
 	const body = SendEmailRequestSchema.parse(await c.req.json());
 	const { to, cc, bcc, from, subject, html, text, attachments, in_reply_to, references, thread_id } = body;
@@ -378,7 +378,7 @@ app.get("/api/v1/mailboxes/:mailboxId/emails/:emailId/attachments/:attachmentId"
 	const emailId = c.req.param("emailId")!;
 	const attachmentId = c.req.param("attachmentId")!;
 	const attachment = await c.var.mailboxStub.getAttachment(attachmentId);
-	if (!attachment) return c.json({ error: "Attachment not found" }, 404);
+	if (!attachment || attachment.email_id !== emailId) return c.json({ error: "Attachment not found" }, 404);
 	const obj = await c.env.BUCKET.get(`attachments/${emailId}/${attachmentId}/${attachment.filename}`);
 	if (!obj) return c.json({ error: "Attachment file not found" }, 404);
 	const headers = new Headers();

@@ -3,6 +3,7 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 import { DurableObject } from "cloudflare:workers";
+import { API_KEY_SCOPES } from "../../shared/api-permissions";
 import type { OutboundSendLog, OutboundSendLogPage, OutboundSendSource, OutboundSendStatus } from "../../shared/outbound-logs";
 import { sendEmail } from "../email-sender";
 import { storeAttachments } from "../lib/attachments";
@@ -2076,6 +2077,10 @@ export class OperationsDO extends DurableObject<Env> {
 		scopes?: string[];
 		allowedMailboxes?: string[];
 	}) : Promise<OperationsApiKeyCreateResult> {
+		const scopes = input.scopes ?? ["transactional:send"];
+		if (!scopes.length || scopes.some((scope) => !API_KEY_SCOPES.some((known) => known === scope))) {
+			throw new Error("Select at least one supported API key scope");
+		}
 		const id = crypto.randomUUID();
 		const createdAt = nowIso();
 		const secret = randomSecret(32);
@@ -2090,8 +2095,8 @@ export class OperationsDO extends DurableObject<Env> {
 			input.name.trim(),
 			keyPrefix,
 			keyHash,
-			JSON.stringify((input.scopes && input.scopes.length > 0 ? input.scopes : ["transactional:send"])),
-			JSON.stringify(normalizeTags(input.allowedMailboxes)),
+			JSON.stringify([...new Set(scopes)]),
+			JSON.stringify(normalizeTags(input.allowedMailboxes?.map((mailbox) => mailbox.toLowerCase()))),
 			createdAt,
 		);
 		const record = this.row<Record<string, unknown>>(
@@ -2117,7 +2122,7 @@ export class OperationsDO extends DurableObject<Env> {
 		return { revoked: true };
 	}
 
-	async verifyApiKey(rawKey: string, requiredScope: string, mailboxId?: string) {
+	async authenticateApiKey(rawKey: string) {
 		const hash = await sha256(rawKey);
 		const row = this.row<Record<string, unknown>>(
 			`SELECT id, name, key_prefix, scopes_json, allowed_mailboxes_json, last_used_at, created_at, revoked_at
@@ -2127,16 +2132,27 @@ export class OperationsDO extends DurableObject<Env> {
 		);
 		if (!row) return null;
 		const apiKey = this.mapApiKey(row);
+		apiKey.allowed_mailboxes = normalizeTags(apiKey.allowed_mailboxes.map((mailbox) => mailbox.toLowerCase()));
+		return apiKey;
+	}
+
+	async verifyApiKey(rawKey: string, requiredScope: string, mailboxId?: string) {
+		const apiKey = await this.authenticateApiKey(rawKey);
+		if (!apiKey) return null;
 		if (!apiKey.scopes.includes(requiredScope)) return null;
-		if (mailboxId && apiKey.allowed_mailboxes.length > 0 && !apiKey.allowed_mailboxes.includes(mailboxId)) {
+		if (mailboxId && apiKey.allowed_mailboxes.length > 0 && !apiKey.allowed_mailboxes.includes(mailboxId.toLowerCase())) {
 			return null;
 		}
+		await this.recordApiKeyUse(apiKey.id);
+		return apiKey;
+	}
+
+	async recordApiKeyUse(apiKeyId: string) {
 		this.run(
 			`UPDATE api_keys SET last_used_at = ?2 WHERE id = ?1`,
-			apiKey.id,
+			apiKeyId,
 			nowIso(),
 		);
-		return apiKey;
 	}
 
 	async sendTransactionalEmail(rawApiKey: string, payload: TransactionalSendPayload) {

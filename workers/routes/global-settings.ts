@@ -4,13 +4,14 @@
 
 import { Hono } from "hono";
 import { z } from "zod";
+import { API_KEY_SCOPES } from "../../shared/api-permissions";
 import type { Env } from "../types";
 import { getOperationsStub } from "../lib/operations";
 
 const apiKeySchema = z.object({
 	name: z.string().min(1),
-	scopes: z.array(z.string()).min(1).optional(),
-	allowedMailboxes: z.array(z.string().email()).optional(),
+	scopes: z.array(z.enum(API_KEY_SCOPES)).min(1).optional(),
+	allowedMailboxes: z.array(z.string().trim().email().toLowerCase()).optional(),
 });
 
 const userSchema = z.object({
@@ -56,8 +57,9 @@ globalSettingsRouter.get("/api-keys", async (c) => {
 });
 
 globalSettingsRouter.post("/api-keys", async (c) => {
-	const body = apiKeySchema.parse(await c.req.json());
-	return c.json(await settingsOps(c.env).createApiKey(body), 201);
+	const body = apiKeySchema.safeParse(await c.req.json().catch(() => null));
+	if (!body.success) return c.json({ error: "Invalid API key settings", issues: body.error.issues }, 400);
+	return c.json(await settingsOps(c.env).createApiKey(body.data), 201);
 });
 
 globalSettingsRouter.delete("/api-keys/:apiKeyId", async (c) => {

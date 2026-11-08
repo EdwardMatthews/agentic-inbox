@@ -6,6 +6,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { Env } from "../types";
 import { getOperationsStub } from "../lib/operations";
+import { extractApiKey } from "../lib/api-key";
 
 const recipientFieldSchema = z.union([
 	z.string().email(),
@@ -50,16 +51,6 @@ type TransactionalStub = {
 
 function transactionalOps(env: Env): TransactionalStub {
 	return getOperationsStub(env) as unknown as TransactionalStub;
-}
-
-function extractApiKey(request: Request) {
-	const direct = request.headers.get("x-agentic-inbox-api-key");
-	if (direct?.trim()) return direct.trim();
-	const auth = request.headers.get("authorization");
-	if (auth?.toLowerCase().startsWith("bearer ")) {
-		return auth.slice(7).trim();
-	}
-	return null;
 }
 
 export const transactionalRouter = new Hono<{ Bindings: Env }>();

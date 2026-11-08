@@ -23,7 +23,9 @@ export type MailboxContext = {
 export const requireMailbox = createMiddleware<MailboxContext>(async (c, next) => {
 	const rawId = c.req.param("mailboxId");
 	if (!rawId) return c.json({ error: "Mailbox ID required" }, 400);
-	const mailboxId = decodeURIComponent(rawId);
+	// Hono has already decoded route parameters; decoding again can change the
+	// mailbox after the authorization middleware has checked its allowlist.
+	const mailboxId = rawId;
 
 	// Verify mailbox exists
 	const key = `mailboxes/${mailboxId}.json`;

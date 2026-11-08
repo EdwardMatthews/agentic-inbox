@@ -7,11 +7,12 @@ import { ArrowLeftIcon, BookOpenIcon, CopyIcon } from "@phosphor-icons/react";
 import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router";
+import { API_KEY_ENDPOINTS, API_KEY_SCOPES, API_KEY_SCOPE_DETAILS, getApiKeyEndpoint } from "shared/api-permissions";
 import { OUTBOUND_SEND_SOURCES, OUTBOUND_SEND_STATUSES } from "shared/outbound-logs";
 import api from "~/services/api";
 import { queryKeys } from "~/queries/keys";
 
-type AuthMode = "Session Cookie" | "Admin Session Cookie" | "API Key" | "Public" | "Advanced";
+type AuthMode = "Session Cookie" | "Admin Session Cookie" | "API Key" | "Public";
 
 interface EndpointDoc {
 	method: string;
@@ -41,38 +42,57 @@ interface EndpointSection {
 	examples?: ExampleGroup[];
 }
 
+const mailboxKeyCreationJson = JSON.stringify({
+	name: "mailbox-service",
+	scopes: [...new Set(API_KEY_ENDPOINTS.filter((endpoint) => endpoint.mailboxRule !== "body").map((endpoint) => endpoint.scope))],
+	allowedMailboxes: ["noreply@example.com"],
+}, null, 2);
+
 const endpointSections: EndpointSection[] = [
 	{
 		id: "auth",
 		title: "Auth Modes",
 		description:
-			"Agentic Inbox currently exposes three HTTP auth modes: Session Cookie for human/admin APIs, API key for machine transactional sends, and public endpoints for opens/clicks/unsubscribes.",
+			"Use a signed session cookie for the application and admin APIs, a scoped API key for supported mailbox and transactional APIs, or no application credentials for explicitly public routes. API keys never grant admin, UI, or MCP access; existing session roles and mailbox permissions are unchanged.",
 		endpoints: [
 			{
-				method: "AUTH",
-				path: "agentic_inbox_session cookie",
-				auth: "Session Cookie",
-				title: "Protected application APIs",
-				description: "Most mailbox, operations, and settings APIs require a valid signed session cookie created by the local login flow.",
-				headers: ["Cookie: agentic_inbox_session=<session-token>"],
-			},
-			{
-				method: "AUTH",
-				path: "Authorization / X-Agentic-Inbox-Api-Key",
-				auth: "API Key",
-				title: "Machine transactional send",
-				description: "External applications should use a managed API key for transactional mail.",
-				headers: [
-					"Authorization: Bearer <api-key>",
-					"X-Agentic-Inbox-Api-Key: <api-key>",
-				],
-			},
-			{
-				method: "AUTH",
-				path: "/ops/*",
+				method: "GET",
+				path: "/api/v1/auth/bootstrap-status",
 				auth: "Public",
-				title: "Recipient-facing tracking routes",
-				description: "Open, click, and unsubscribe routes must be publicly accessible so recipients can trigger them from email clients.",
+				title: "Get bootstrap status",
+				description: "Returns whether the first administrator still needs to be created.",
+			},
+			{
+				method: "POST",
+				path: "/api/v1/auth/bootstrap-admin",
+				auth: "Public",
+				title: "Create the first administrator",
+				description: "Available only before any users exist. Creates the first admin and sets a session cookie.",
+				body: ["email", "name", "password (at least 12 characters)"],
+			},
+			{
+				method: "POST",
+				path: "/api/v1/auth/login",
+				auth: "Public",
+				title: "Log in",
+				description: "Validates local user credentials and sets the signed agentic_inbox_session cookie.",
+				body: ["email", "password"],
+			},
+			{
+				method: "POST",
+				path: "/api/v1/auth/logout",
+				auth: "Public",
+				title: "Log out",
+				description: "Revokes the session cookie when supplied and clears it. Safe to call without a session; API keys do not establish a session.",
+				headers: ["Cookie: agentic_inbox_session=<session-token> (optional)"],
+			},
+			{
+				method: "GET",
+				path: "/api/v1/auth/session",
+				auth: "Public",
+				title: "Get current session",
+				description: "Returns the cookie-authenticated user, or { user: null } when no valid session exists. API keys do not establish a session.",
+				headers: ["Cookie: agentic_inbox_session=<session-token> (optional)"],
 			},
 		],
 	},
@@ -94,12 +114,12 @@ const endpointSections: EndpointSection[] = [
 				path: "/api/v1/mailboxes",
 				auth: "Session Cookie",
 				title: "List mailboxes",
-				description: "Returns all provisioned mailboxes with inbox unread counts.",
+				description: "Returns accessible provisioned mailboxes with inbox unread counts. Session membership or the API key mailbox whitelist filters the result.",
 			},
 			{
 				method: "POST",
 				path: "/api/v1/mailboxes",
-				auth: "Session Cookie",
+				auth: "Admin Session Cookie",
 				title: "Create mailbox",
 				description: "Creates a mailbox configuration and initializes its folders.",
 				body: ["email", "name", "settings?"],
@@ -116,15 +136,42 @@ const endpointSections: EndpointSection[] = [
 				path: "/api/v1/mailboxes/:mailboxId",
 				auth: "Session Cookie",
 				title: "Update mailbox settings",
-				description: "Updates mailbox-level settings such as fromName and agent prompt.",
+				description: "Updates mailbox-level settings such as fromName and agent prompt. Requires a mailbox owner or global admin session.",
 				body: ["settings"],
 			},
 			{
 				method: "DELETE",
 				path: "/api/v1/mailboxes/:mailboxId",
-				auth: "Session Cookie",
+				auth: "Admin Session Cookie",
 				title: "Delete mailbox",
 				description: "Deletes the mailbox config. Existing email cleanup is not fully destructive yet.",
+			},
+		],
+		examples: [
+			{
+				title: "List allowed mailboxes",
+				description: `Requires ${getApiKeyEndpoint("GET", "/api/v1/mailboxes")?.scope}. The response is an array filtered by the key's mailbox whitelist. Define BASE_URL/baseUrl/base_url and load your key from server-side environment variables.`,
+				examples: [
+					{ language: "cURL", code: `curl --fail-with-body "$BASE_URL/api/v1/mailboxes" \\
+  -H "X-Agentic-Inbox-Api-Key: $AGENTIC_INBOX_API_KEY"` },
+					{ language: "Node.js", code: `const response = await fetch(\`\${baseUrl}/api/v1/mailboxes\`, {
+  headers: { Authorization: \`Bearer \${process.env.AGENTIC_INBOX_API_KEY}\` },
+});
+if (!response.ok) throw new Error(\`HTTP \${response.status}: \${await response.text()}\`);
+const mailboxes = await response.json();
+console.log(mailboxes);` },
+					{ language: "Python", code: `import os
+import requests
+
+api_key = os.environ["AGENTIC_INBOX_API_KEY"]
+response = requests.get(
+    f"{base_url}/api/v1/mailboxes",
+    headers={"Authorization": f"Bearer {api_key}"},
+)
+response.raise_for_status()
+mailboxes = response.json()
+print(mailboxes)` },
+				],
 			},
 		],
 	},
@@ -139,7 +186,7 @@ const endpointSections: EndpointSection[] = [
 				path: "/api/v1/mailboxes/:mailboxId/emails",
 				auth: "Session Cookie",
 				title: "List emails",
-				description: "Lists mailbox emails. Supports folder, thread_id, threaded, pagination, and sort query params.",
+				description: "Lists mailbox emails with pagination and sorting. With folder, returns { emails, totalCount }; without folder, returns an email array. Read scopes cover all existing email folders, including Drafts; saving drafts remains session-only.",
 				query: ["folder", "thread_id", "threaded", "page", "limit", "sortColumn", "sortDirection"],
 			},
 			{
@@ -163,7 +210,7 @@ const endpointSections: EndpointSection[] = [
 				path: "/api/v1/mailboxes/:mailboxId/emails/:id",
 				auth: "Session Cookie",
 				title: "Get email detail",
-				description: "Returns a full email record with attachments.",
+				description: "Returns a full email record with attachments, including existing draft records when the key has the required read scope.",
 			},
 			{
 				method: "PUT",
@@ -266,58 +313,125 @@ const endpointSections: EndpointSection[] = [
 		],
 		examples: [
 			{
-				title: "Mailbox send example",
-				description: "Use this when a trusted backend or authenticated client needs to send a single email through a specific mailbox.",
+				title: "Page through emails and read a message",
+				description: `Requires ${getApiKeyEndpoint("GET", "/api/v1/mailboxes/:mailboxId/emails")?.scope} and a whitelisted mailbox. Pages are 1-based. Specifying folder=inbox returns { emails, totalCount }; use the record's id for detail, reply, and forward paths. URL-encode mailbox addresses and IDs.`,
+				examples: [
+					{ language: "cURL", code: `# First page; request page=2 for the next page.
+curl --fail-with-body "$BASE_URL/api/v1/mailboxes/noreply%40example.com/emails?folder=inbox&page=1&limit=20" \\
+  -H "Authorization: Bearer $AGENTIC_INBOX_API_KEY"
+
+# EMAIL_ID_URL_ENCODED is a URL-encoded id from the response's emails array.
+curl --fail-with-body "$BASE_URL/api/v1/mailboxes/noreply%40example.com/emails/$EMAIL_ID_URL_ENCODED" \\
+  -H "Authorization: Bearer $AGENTIC_INBOX_API_KEY"` },
+					{ language: "Node.js", code: `const mailboxUrl = \`\${baseUrl}/api/v1/mailboxes/\${encodeURIComponent("noreply@example.com")}\`;
+const headers = { Authorization: \`Bearer \${process.env.AGENTIC_INBOX_API_KEY}\` };
+async function getJson(url) {
+  const response = await fetch(url, { headers });
+  if (!response.ok) throw new Error(\`HTTP \${response.status}: \${await response.text()}\`);
+  return response.json();
+}
+for (let page = 1; ; page++) {
+  const { emails, totalCount } = await getJson(\`\${mailboxUrl}/emails?folder=inbox&page=\${page}&limit=20\`);
+  for (const email of emails) {
+    const detail = await getJson(\`\${mailboxUrl}/emails/\${encodeURIComponent(email.id)}\`);
+    console.log(detail);
+  }
+  if (emails.length === 0 || page * 20 >= totalCount) break;
+}` },
+					{ language: "Python", code: `import os
+from urllib.parse import quote
+import requests
+
+mailbox_url = f"{base_url}/api/v1/mailboxes/{quote('noreply@example.com', safe='')}"
+headers = {"Authorization": f"Bearer {os.environ['AGENTIC_INBOX_API_KEY']}"}
+page = 1
+while True:
+    response = requests.get(f"{mailbox_url}/emails", headers=headers,
+                            params={"folder": "inbox", "page": page, "limit": 20})
+    response.raise_for_status()
+    result = response.json()
+    for email in result["emails"]:
+        detail = requests.get(f"{mailbox_url}/emails/{quote(email['id'], safe='')}", headers=headers)
+        detail.raise_for_status()
+        print(detail.json())
+    if not result["emails"] or page * 20 >= result["totalCount"]:
+        break
+    page += 1` },
+				],
+			},
+			{
+				title: "Send, reply, and forward with an API key",
+				description: `Requires ${getApiKeyEndpoint("POST", "/api/v1/mailboxes/:mailboxId/emails")?.scope} and a whitelisted mailbox. Use an existing email ID for reply/forward. These sends do not grant separate read/star/thread-read or draft mutation access. API key replies do not mark threads read; session-cookie sends retain existing editor/admin permissions and reply behavior.`,
 				examples: [
 					{
 						language: "cURL",
-						code: `curl -X POST "$BASE_URL/api/v1/mailboxes/noreply@example.com/emails" \\
+						code: `curl --fail-with-body -X POST "$BASE_URL/api/v1/mailboxes/noreply%40example.com/emails" \\
   -H "Content-Type: application/json" \\
-  -H "Cookie: agentic_inbox_session=$SESSION_COOKIE" \\
+  -H "Authorization: Bearer $AGENTIC_INBOX_API_KEY" \\
   -d '{
     "to": "user@example.com",
     "from": { "email": "noreply@example.com", "name": "Example App" },
     "subject": "Welcome",
     "html": "<p>Welcome to Example App.</p>",
     "text": "Welcome to Example App."
-  }'`,
+  }'
+
+# EMAIL_ID_URL_ENCODED is an existing, URL-encoded email id.
+curl --fail-with-body -X POST "$BASE_URL/api/v1/mailboxes/noreply%40example.com/emails/$EMAIL_ID_URL_ENCODED/reply" \\
+  -H "Authorization: Bearer $AGENTIC_INBOX_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"to":"user@example.com","from":"noreply@example.com","subject":"Re: Welcome","text":"Thanks for your message."}'
+
+curl --fail-with-body -X POST "$BASE_URL/api/v1/mailboxes/noreply%40example.com/emails/$EMAIL_ID_URL_ENCODED/forward" \\
+  -H "Authorization: Bearer $AGENTIC_INBOX_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"to":"colleague@example.com","from":"noreply@example.com","subject":"Fwd: Welcome","text":"Sharing this message."}'`,
 					},
 					{
-						language: "JavaScript / TypeScript",
-						code: `await fetch(\`\${baseUrl}/api/v1/mailboxes/noreply@example.com/emails\`, {
-  method: "POST",
-  headers: {
-    "Content-Type": "application/json",
-    Cookie: \`agentic_inbox_session=\${sessionCookie}\`,
-  },
-  body: JSON.stringify({
-    to: "user@example.com",
-    from: { email: "noreply@example.com", name: "Example App" },
-    subject: "Welcome",
-    html: "<p>Welcome to Example App.</p>",
-    text: "Welcome to Example App.",
-  }),
-});`,
+						language: "Node.js",
+						code: `const mailboxUrl = \`\${baseUrl}/api/v1/mailboxes/\${encodeURIComponent("noreply@example.com")}\`;
+const emailId = "existing-email-id"; // Replace with a real email id.
+async function send(path, to, subject, text) {
+  const response = await fetch(\`\${mailboxUrl}/emails\${path}\`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: \`Bearer \${process.env.AGENTIC_INBOX_API_KEY}\`,
+    },
+    body: JSON.stringify({
+      to,
+      from: { email: "noreply@example.com", name: "Example App" },
+      subject,
+      text,
+    }),
+  });
+  if (!response.ok) throw new Error(\`HTTP \${response.status}: \${await response.text()}\`);
+  return response.json();
+}
+await send("", "user@example.com", "Welcome", "Welcome to Example App.");
+await send(\`/\${encodeURIComponent(emailId)}/reply\`, "user@example.com", "Re: Welcome", "Thanks for your message.");
+await send(\`/\${encodeURIComponent(emailId)}/forward\`, "colleague@example.com", "Fwd: Welcome", "Sharing this message.");`,
 					},
 					{
 						language: "Python",
-						code: `import requests
+						code: `import os
+from urllib.parse import quote
+import requests
 
-response = requests.post(
-    f"{base_url}/api/v1/mailboxes/noreply@example.com/emails",
-    headers={
-        "Content-Type": "application/json",
-        "Cookie": f"agentic_inbox_session={session_cookie}",
-    },
-    json={
-        "to": "user@example.com",
-        "from": {"email": "noreply@example.com", "name": "Example App"},
-        "subject": "Welcome",
-        "html": "<p>Welcome to Example App.</p>",
-        "text": "Welcome to Example App.",
-    },
-)
-response.raise_for_status()`,
+mailbox_url = f"{base_url}/api/v1/mailboxes/{quote('noreply@example.com', safe='')}"
+email_id = "existing-email-id"  # Replace with a real email id.
+headers = {"Authorization": f"Bearer {os.environ['AGENTIC_INBOX_API_KEY']}"}
+for path, recipient, subject, body in [
+    ("", "user@example.com", "Welcome", "Welcome to Example App."),
+    (f"/{quote(email_id, safe='')}/reply", "user@example.com", "Re: Welcome", "Thanks for your message."),
+    (f"/{quote(email_id, safe='')}/forward", "colleague@example.com", "Fwd: Welcome", "Sharing this message."),
+]:
+    response = requests.post(
+        f"{mailbox_url}/emails{path}", headers=headers,
+        json={"to": recipient, "from": "noreply@example.com", "subject": subject, "text": body},
+    )
+    response.raise_for_status()
+    print(response.json())`,
 					},
 				],
 			},
@@ -334,7 +448,7 @@ response.raise_for_status()`,
 				path: "/api/v1/transactional/send",
 				auth: "API Key",
 				title: "Send transactional email",
-				description: "Sends a single transactional email using an API key. Supports inline content or a saved template, attachments, and optional open/click tracking.",
+				description: "Sends a single transactional email using an API key. Supports inline content or a saved template, attachments, and optional open/click tracking. Preserves legacy authentication: missing, invalid, or revoked keys, insufficient scope, and an out-of-whitelist mailbox all return 401, not the mailbox API's permission-denied 403.",
 				headers: [
 					"Authorization: Bearer <api-key> OR X-Agentic-Inbox-Api-Key: <api-key>",
 					"Content-Type: application/json",
@@ -461,30 +575,35 @@ defer resp.Body.Close()`,
 			{
 				method: "GET",
 				path: "/api/v1/settings/api-keys",
-				auth: "Session Cookie",
+				auth: "Admin Session Cookie",
 				title: "List API keys",
 				description: "Returns API key metadata, prefixes, scopes, mailbox allowlists, and last-used timestamps.",
 			},
 			{
 				method: "POST",
 				path: "/api/v1/settings/api-keys",
-				auth: "Session Cookie",
+				auth: "Admin Session Cookie",
 				title: "Create API key",
-				description: "Creates a new machine key. The full secret is returned once at creation time only.",
+				description: "Creates a new machine key. Supply a nonempty array of supported scopes; unknown scopes and an empty selection are rejected. Omitting scopes preserves the transactional-send default. An omitted or empty allowedMailboxes array permits all existing mailboxes within the selected scopes. The full secret is returned only once.",
 				body: ["name", "scopes?", "allowedMailboxes?"],
 			},
 			{
 				method: "DELETE",
 				path: "/api/v1/settings/api-keys/:apiKeyId",
-				auth: "Session Cookie",
+				auth: "Admin Session Cookie",
 				title: "Revoke API key",
 				description: "Revokes an API key permanently.",
 			},
+			{ method: "GET", path: "/api/v1/settings/users", auth: "Admin Session Cookie", title: "List users", description: "Returns local users and mailbox memberships." },
+			{ method: "POST", path: "/api/v1/settings/users", auth: "Admin Session Cookie", title: "Create user", description: "Creates a local user.", body: ["email", "name", "password (at least 12 characters)", "globalRole? (admin | member)", "status? (active | disabled)"] },
+			{ method: "PUT", path: "/api/v1/settings/users/:userId", auth: "Admin Session Cookie", title: "Update user", description: "Updates a user's name, password, global role, or status.", body: ["name?", "password?", "globalRole?", "status?"] },
+			{ method: "PUT", path: "/api/v1/settings/users/:userId/memberships", auth: "Admin Session Cookie", title: "Grant mailbox access", description: "Sets the user's mailbox role. The body userId must match the path.", body: ["userId", "mailboxId", "role (viewer | editor | owner)"] },
+			{ method: "DELETE", path: "/api/v1/settings/users/:userId/memberships/:mailboxId", auth: "Admin Session Cookie", title: "Remove mailbox access", description: "Removes the user's mailbox membership." },
 		],
 		examples: [
 			{
 				title: "Admin create API key",
-				description: "Use this from a trusted admin environment to provision a transactional key for another service.",
+				description: "Use a global admin session to provision a transactional-only key. Existing transactional credentials and payloads remain compatible; mailbox scopes are opt-in.",
 				examples: [
 					{
 						language: "cURL",
@@ -493,10 +612,43 @@ defer resp.Body.Close()`,
   -H "Cookie: agentic_inbox_session=$SESSION_COOKIE" \\
   -d '{
     "name": "signup-service",
-    "scopes": ["transactional:send"],
+    "scopes": ${JSON.stringify([getApiKeyEndpoint("POST", "/api/v1/transactional/send")?.scope])},
     "allowedMailboxes": ["noreply@example.com"]
   }'`,
 					},
+				],
+			},
+			{
+				title: "Admin create a mailbox API key",
+				description: "This example selects the registry's mailbox read/send scopes, not transactional sending. Remove any scopes the service does not need; at least one supported scope is required. Only a global admin session can create keys. An API key cannot create another key, even with every scope selected. Use allowedMailboxes: [] only when all existing mailboxes should be accessible within those scopes.",
+				examples: [
+					{ language: "JSON", code: mailboxKeyCreationJson },
+					{ language: "cURL", code: `curl --fail-with-body -X POST "$BASE_URL/api/v1/settings/api-keys" \\
+  -H "Cookie: agentic_inbox_session=$SESSION_COOKIE" \\
+  -H "Content-Type: application/json" \\
+  -d '${mailboxKeyCreationJson}'` },
+					{ language: "Node.js", code: `const response = await fetch(\`\${baseUrl}/api/v1/settings/api-keys\`, {
+  method: "POST",
+  headers: {
+    Cookie: \`agentic_inbox_session=\${process.env.AGENTIC_INBOX_ADMIN_SESSION}\`,
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify(${mailboxKeyCreationJson}),
+});
+if (!response.ok) throw new Error(\`HTTP \${response.status}: \${await response.text()}\`);
+const created = await response.json();
+// Store created.apiKey securely now; it is returned only once. Do not log it.` },
+					{ language: "Python", code: `import os
+import requests
+
+response = requests.post(
+    f"{base_url}/api/v1/settings/api-keys",
+    headers={"Cookie": f"agentic_inbox_session={os.environ['AGENTIC_INBOX_ADMIN_SESSION']}"},
+    json=${mailboxKeyCreationJson},
+)
+response.raise_for_status()
+created = response.json()
+# Store created["apiKey"] securely now; it is returned only once. Do not log it.` },
 				],
 			},
 		],
@@ -505,29 +657,29 @@ defer resp.Body.Close()`,
 		id: "operations",
 		title: "Operations APIs",
 		description:
-			"These APIs power the operations console and campaign subsystem. They are best for list management, templates, scheduling, event telemetry, and webhook callbacks.",
+			"Operations management requires a global admin session, not an API key. These APIs manage customers, templates, campaigns, telemetry, and webhooks. The provider-receipts callback is the explicitly public exception, with optional shared-secret protection.",
 		endpoints: [
-			{ method: "GET", path: "/api/v1/operations/customers", auth: "Session Cookie", title: "List customers", description: "Supports query, status, tag, page, and limit." },
-			{ method: "POST", path: "/api/v1/operations/customers", auth: "Session Cookie", title: "Create customer", description: "Creates a campaign recipient record.", body: ["email", "name?", "firstName?", "lastName?", "status?", "tags?", "metadata?"] },
-			{ method: "GET", path: "/api/v1/operations/customers/:customerId", auth: "Session Cookie", title: "Get customer", description: "Returns a single customer." },
-			{ method: "PUT", path: "/api/v1/operations/customers/:customerId", auth: "Session Cookie", title: "Update customer", description: "Updates lifecycle and segmentation fields.", body: ["email?", "name?", "firstName?", "lastName?", "status?", "tags?", "metadata?"] },
-			{ method: "DELETE", path: "/api/v1/operations/customers/:customerId", auth: "Session Cookie", title: "Delete customer", description: "Deletes the customer and removes queued campaign recipient rows." },
-			{ method: "GET", path: "/api/v1/operations/templates", auth: "Session Cookie", title: "List templates", description: "Lists all saved templates." },
-			{ method: "POST", path: "/api/v1/operations/templates", auth: "Session Cookie", title: "Create template", description: "Creates a reusable subject/html/text template.", body: ["name", "description?", "subjectTemplate", "htmlTemplate", "textTemplate?", "previewData?"] },
-			{ method: "GET", path: "/api/v1/operations/templates/:templateId", auth: "Session Cookie", title: "Get template", description: "Returns one template." },
-			{ method: "PUT", path: "/api/v1/operations/templates/:templateId", auth: "Session Cookie", title: "Update template", description: "Updates a template.", body: ["name?", "description?", "subjectTemplate?", "htmlTemplate?", "textTemplate?", "previewData?"] },
-			{ method: "DELETE", path: "/api/v1/operations/templates/:templateId", auth: "Session Cookie", title: "Delete template", description: "Deletes a template." },
-			{ method: "POST", path: "/api/v1/operations/templates/preview", auth: "Session Cookie", title: "Render preview", description: "Renders a template with sample variables and optional tracking.", body: ["mailboxId", "templateId?", "customerId?", "subjectTemplate?", "htmlTemplate?", "textTemplate?", "previewData?", "trackOpens?", "trackClicks?"] },
-			{ method: "GET", path: "/api/v1/operations/campaigns", auth: "Session Cookie", title: "List campaigns", description: "Returns all campaigns with live counters." },
-			{ method: "POST", path: "/api/v1/operations/campaigns", auth: "Session Cookie", title: "Create campaign", description: "Creates a campaign draft.", body: ["name", "mailboxId", "templateId?", "subjectTemplate?", "htmlTemplate?", "textTemplate?", "audience?", "scheduledAt?", "throttlePerMinute?", "trackOpens?", "trackClicks?"] },
-			{ method: "GET", path: "/api/v1/operations/campaigns/:campaignId", auth: "Session Cookie", title: "Get campaign", description: "Returns a campaign." },
-			{ method: "PUT", path: "/api/v1/operations/campaigns/:campaignId", auth: "Session Cookie", title: "Update campaign", description: "Updates a campaign draft or scheduled send.", body: ["same fields as create"] },
-			{ method: "POST", path: "/api/v1/operations/campaigns/:campaignId/start", auth: "Session Cookie", title: "Start / queue campaign", description: "Builds recipient rows and starts or schedules delivery.", body: ["scheduledAt?"] },
-			{ method: "POST", path: "/api/v1/operations/campaigns/:campaignId/pause", auth: "Session Cookie", title: "Pause campaign", description: "Pauses queued sends." },
-			{ method: "POST", path: "/api/v1/operations/campaigns/:campaignId/resume", auth: "Session Cookie", title: "Resume campaign", description: "Resumes paused sends." },
-			{ method: "POST", path: "/api/v1/operations/campaigns/:campaignId/cancel", auth: "Session Cookie", title: "Cancel campaign", description: "Cancels unsent recipients." },
-			{ method: "GET", path: "/api/v1/operations/campaigns/:campaignId/recipients", auth: "Session Cookie", title: "List campaign recipients", description: "Supports page and limit." },
-			{ method: "GET", path: "/api/v1/operations/events", auth: "Session Cookie", title: "List events", description: "Supports campaignId, customerId, eventType, page, and limit." },
+			{ method: "GET", path: "/api/v1/operations/customers", auth: "Admin Session Cookie", title: "List customers", description: "Supports query, status, tag, page, and limit." },
+			{ method: "POST", path: "/api/v1/operations/customers", auth: "Admin Session Cookie", title: "Create customer", description: "Creates a campaign recipient record.", body: ["email", "name?", "firstName?", "lastName?", "status?", "tags?", "metadata?"] },
+			{ method: "GET", path: "/api/v1/operations/customers/:customerId", auth: "Admin Session Cookie", title: "Get customer", description: "Returns a single customer." },
+			{ method: "PUT", path: "/api/v1/operations/customers/:customerId", auth: "Admin Session Cookie", title: "Update customer", description: "Updates lifecycle and segmentation fields.", body: ["email?", "name?", "firstName?", "lastName?", "status?", "tags?", "metadata?"] },
+			{ method: "DELETE", path: "/api/v1/operations/customers/:customerId", auth: "Admin Session Cookie", title: "Delete customer", description: "Deletes the customer and removes queued campaign recipient rows." },
+			{ method: "GET", path: "/api/v1/operations/templates", auth: "Admin Session Cookie", title: "List templates", description: "Lists all saved templates." },
+			{ method: "POST", path: "/api/v1/operations/templates", auth: "Admin Session Cookie", title: "Create template", description: "Creates a reusable subject/html/text template.", body: ["name", "description?", "subjectTemplate", "htmlTemplate", "textTemplate?", "previewData?"] },
+			{ method: "GET", path: "/api/v1/operations/templates/:templateId", auth: "Admin Session Cookie", title: "Get template", description: "Returns one template." },
+			{ method: "PUT", path: "/api/v1/operations/templates/:templateId", auth: "Admin Session Cookie", title: "Update template", description: "Updates a template.", body: ["name?", "description?", "subjectTemplate?", "htmlTemplate?", "textTemplate?", "previewData?"] },
+			{ method: "DELETE", path: "/api/v1/operations/templates/:templateId", auth: "Admin Session Cookie", title: "Delete template", description: "Deletes a template." },
+			{ method: "POST", path: "/api/v1/operations/templates/preview", auth: "Admin Session Cookie", title: "Render preview", description: "Renders a template with sample variables and optional tracking.", body: ["mailboxId", "templateId?", "customerId?", "subjectTemplate?", "htmlTemplate?", "textTemplate?", "previewData?", "trackOpens?", "trackClicks?"] },
+			{ method: "GET", path: "/api/v1/operations/campaigns", auth: "Admin Session Cookie", title: "List campaigns", description: "Returns all campaigns with live counters." },
+			{ method: "POST", path: "/api/v1/operations/campaigns", auth: "Admin Session Cookie", title: "Create campaign", description: "Creates a campaign draft.", body: ["name", "mailboxId", "templateId?", "subjectTemplate?", "htmlTemplate?", "textTemplate?", "audience?", "scheduledAt?", "throttlePerMinute?", "trackOpens?", "trackClicks?"] },
+			{ method: "GET", path: "/api/v1/operations/campaigns/:campaignId", auth: "Admin Session Cookie", title: "Get campaign", description: "Returns a campaign." },
+			{ method: "PUT", path: "/api/v1/operations/campaigns/:campaignId", auth: "Admin Session Cookie", title: "Update campaign", description: "Updates a campaign draft or scheduled send.", body: ["same fields as create"] },
+			{ method: "POST", path: "/api/v1/operations/campaigns/:campaignId/start", auth: "Admin Session Cookie", title: "Start / queue campaign", description: "Builds recipient rows and starts or schedules delivery.", body: ["scheduledAt?"] },
+			{ method: "POST", path: "/api/v1/operations/campaigns/:campaignId/pause", auth: "Admin Session Cookie", title: "Pause campaign", description: "Pauses queued sends." },
+			{ method: "POST", path: "/api/v1/operations/campaigns/:campaignId/resume", auth: "Admin Session Cookie", title: "Resume campaign", description: "Resumes paused sends." },
+			{ method: "POST", path: "/api/v1/operations/campaigns/:campaignId/cancel", auth: "Admin Session Cookie", title: "Cancel campaign", description: "Cancels unsent recipients." },
+			{ method: "GET", path: "/api/v1/operations/campaigns/:campaignId/recipients", auth: "Admin Session Cookie", title: "List campaign recipients", description: "Supports page and limit." },
+			{ method: "GET", path: "/api/v1/operations/events", auth: "Admin Session Cookie", title: "List events", description: "Supports campaignId, customerId, eventType, page, and limit." },
 			{
 				method: "GET",
 				path: "/api/v1/operations/send-logs",
@@ -542,10 +694,10 @@ defer resp.Body.Close()`,
 					"limit? (integer 1-100, default 50)",
 				],
 			},
-			{ method: "GET", path: "/api/v1/operations/webhooks", auth: "Session Cookie", title: "List webhooks", description: "Lists event callback subscriptions." },
-			{ method: "POST", path: "/api/v1/operations/webhooks", auth: "Session Cookie", title: "Create webhook", description: "Creates a webhook subscription.", body: ["name", "url", "secret?", "eventTypes?", "enabled?"] },
-			{ method: "PUT", path: "/api/v1/operations/webhooks/:webhookId", auth: "Session Cookie", title: "Update webhook", description: "Updates webhook config.", body: ["name?", "url?", "secret?", "eventTypes?", "enabled?"] },
-			{ method: "DELETE", path: "/api/v1/operations/webhooks/:webhookId", auth: "Session Cookie", title: "Delete webhook", description: "Deletes a webhook subscription." },
+			{ method: "GET", path: "/api/v1/operations/webhooks", auth: "Admin Session Cookie", title: "List webhooks", description: "Lists event callback subscriptions." },
+			{ method: "POST", path: "/api/v1/operations/webhooks", auth: "Admin Session Cookie", title: "Create webhook", description: "Creates a webhook subscription.", body: ["name", "url", "secret?", "eventTypes?", "enabled?"] },
+			{ method: "PUT", path: "/api/v1/operations/webhooks/:webhookId", auth: "Admin Session Cookie", title: "Update webhook", description: "Updates webhook config.", body: ["name?", "url?", "secret?", "eventTypes?", "enabled?"] },
+			{ method: "DELETE", path: "/api/v1/operations/webhooks/:webhookId", auth: "Admin Session Cookie", title: "Delete webhook", description: "Deletes a webhook subscription." },
 			{ method: "POST", path: "/api/v1/operations/provider-receipts", auth: "Public", title: "Provider receipts", description: "Ingests delivery provider callbacks. Optional shared secret via x-operations-secret.", headers: ["x-operations-secret: <optional shared secret>"], body: ["campaignId?", "recipientId?", "customerId?", "mailboxId?", "email?", "eventType", "payload?"] },
 		],
 		examples: [
@@ -631,16 +783,16 @@ await fetch(\`\${baseUrl}/api/v1/operations/campaigns/\${campaign.id}/start\`, {
 			{
 				method: "POST/GET",
 				path: "/mcp",
-				auth: "Advanced",
+				auth: "Session Cookie",
 				title: "MCP endpoint",
-				description: "Model Context Protocol endpoint for tools such as Claude Code or Cursor. Use when integrating as an MCP server rather than plain REST.",
+				description: "Model Context Protocol endpoint for tools such as Claude Code or Cursor. Requires a session with the existing mailbox permissions; managed API keys cannot authenticate to MCP.",
 			},
 			{
 				method: "WS/HTTP",
 				path: "/agents/*",
-				auth: "Advanced",
+				auth: "Session Cookie",
 				title: "Agent transport",
-				description: "Used by the built-in EmailAgent UI for chat/agent workflows.",
+				description: "Used by the built-in EmailAgent UI for chat/agent workflows. Session-only; managed API keys cannot authenticate to the UI or agent transport.",
 			},
 		],
 	},
@@ -656,6 +808,27 @@ function authBadgeVariant(auth: AuthMode): "primary" | "secondary" | "outline" {
 	return "secondary";
 }
 
+const mailboxWhitelistRules = {
+	list: "An empty allowedMailboxes whitelist includes all existing mailboxes. A nonempty whitelist filters the listing to those mailboxes only.",
+	path: "An empty allowedMailboxes whitelist permits all existing mailboxes. Otherwise :mailboxId in the path must be whitelisted; other mailboxes return 403.",
+	body: "An empty allowedMailboxes whitelist permits all existing mailboxes. Otherwise mailboxId in the JSON body must be whitelisted. This legacy transactional endpoint returns 401 for an out-of-whitelist mailbox or insufficient scope (not 403).",
+} satisfies Record<(typeof API_KEY_ENDPOINTS)[number]["mailboxRule"], string>;
+
+function getEndpointAccess(endpoint: EndpointDoc) {
+	const keyEndpoint = getApiKeyEndpoint(endpoint.method, endpoint.path);
+	return {
+		auth: keyEndpoint
+			? endpoint.auth === "API Key" ? "API Key" : `${endpoint.auth} or API Key`
+			: endpoint.auth === "API Key" ? "Unavailable (API keys not supported)" : endpoint.auth,
+		scope: keyEndpoint?.scope,
+		whitelist: keyEndpoint
+			? mailboxWhitelistRules[keyEndpoint.mailboxRule]
+			: endpoint.auth === "Public"
+				? "N/A - public route; no API key mailbox authorization."
+				: "N/A - API keys are not accepted. Existing session roles and mailbox permissions apply.",
+	};
+}
+
 function SectionCard({ section, baseUrl }: { section: EndpointSection; baseUrl: string }) {
 	return (
 		<section id={section.id} className="rounded-xl border border-kumo-line bg-kumo-base p-5 scroll-mt-6">
@@ -663,17 +836,48 @@ function SectionCard({ section, baseUrl }: { section: EndpointSection; baseUrl: 
 				<h2 className="text-xl font-semibold text-kumo-default">{section.title}</h2>
 				<p className="mt-2 text-sm text-kumo-subtle max-w-3xl">{section.description}</p>
 			</div>
+			{section.id === "auth" && (
+				<div className="mb-5 space-y-3 rounded-lg border border-kumo-line bg-kumo-recessed p-4 text-sm text-kumo-subtle">
+					<p>Session authentication: <code>Cookie: agentic_inbox_session=&lt;session-token&gt;</code>. Admin Session Cookie additionally requires the global admin role. Session mutations retain same-origin protections.</p>
+					<p>API key authentication: <code>Authorization: Bearer &lt;api-key&gt;</code> or <code>X-Agentic-Inbox-Api-Key: &lt;api-key&gt;</code>. Use one header, keep keys server-side, and never put a key in a URL or query parameter.</p>
+					<p><strong className="text-kumo-strong">401:</strong> Missing required credentials, malformed, invalid, or revoked keys, or conflicting key headers. An explicitly supplied invalid key never falls back to a session cookie. The legacy transactional send endpoint also returns 401 for a valid key with insufficient scope or an out-of-whitelist body mailboxId.</p>
+					<p><strong className="text-kumo-strong">403:</strong> On mailbox APIs, a valid key lacks the required scope or targets a mailbox outside its whitelist. A valid key calling a session-only endpoint also receives 403. The legacy transactional permission-denial exception above remains unchanged.</p>
+					<p>An empty <code>allowedMailboxes</code> array permits all existing mailboxes, within the selected scopes. A nonempty whitelist filters mailbox listings and restricts every mailbox path and the transactional body <code>mailboxId</code>. Scopes are independent: sending does not grant reading or mailbox listing.</p>
+					<p>API keys do not grant draft creation/update or management, read/star changes, thread-read mutations, deletion, moves, folder configuration, users, settings, Operations management, MCP, agent transport, or UI access. Email read scopes can read existing messages in any folder, including Drafts.</p>
+					<ul className="space-y-2">
+						{API_KEY_SCOPES.map((scope) => (
+							<li key={scope}><code className="text-kumo-strong">{scope}</code> - {API_KEY_SCOPE_DETAILS[scope].description}</li>
+						))}
+					</ul>
+				</div>
+			)}
 
 			<div className="space-y-4">
-				{section.endpoints.map((endpoint) => (
-					<div key={`${endpoint.method}:${endpoint.path}`} className="rounded-lg border border-kumo-line bg-kumo-recessed p-4">
+				{section.endpoints.map((endpoint) => {
+					const access = getEndpointAccess(endpoint);
+					return (
+					<div key={`${endpoint.method}:${endpoint.path}`} data-api-endpoint={`${endpoint.method} ${endpoint.path}`} className="rounded-lg border border-kumo-line bg-kumo-recessed p-4">
 						<div className="flex flex-wrap items-center gap-2">
 							<Badge variant="primary">{endpoint.method}</Badge>
-							<Badge variant={authBadgeVariant(endpoint.auth)}>{endpoint.auth}</Badge>
-							<code className="rounded bg-kumo-base px-2 py-1 text-xs text-kumo-default">{endpoint.path}</code>
+							<Badge variant={authBadgeVariant(access.scope ? "API Key" : endpoint.auth)}>{access.auth}</Badge>
+							<code className="break-all rounded bg-kumo-base px-2 py-1 text-xs text-kumo-default">{endpoint.path}</code>
 						</div>
 						<div className="mt-3 text-sm font-semibold text-kumo-default">{endpoint.title}</div>
 						<p className="mt-1 text-sm text-kumo-subtle">{endpoint.description}</p>
+						<dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2">
+							<div>
+								<dt className="font-medium text-kumo-strong">Authentication</dt>
+								<dd className="mt-1 text-kumo-subtle">{access.auth}</dd>
+							</div>
+							<div>
+								<dt className="font-medium text-kumo-strong">Required API key scope</dt>
+								<dd className="mt-1 text-kumo-subtle"><code>{access.scope || "N/A - API keys not supported"}</code></dd>
+							</div>
+							<div className="sm:col-span-2">
+								<dt className="font-medium text-kumo-strong">Mailbox whitelist</dt>
+								<dd className="mt-1 text-kumo-subtle">{access.whitelist}</dd>
+							</div>
+						</dl>
 						{endpoint.headers && endpoint.headers.length > 0 && (
 							<div className="mt-3 text-sm">
 								<div className="font-medium text-kumo-strong">Headers</div>
@@ -705,7 +909,8 @@ function SectionCard({ section, baseUrl }: { section: EndpointSection; baseUrl: 
 							</div>
 						)}
 					</div>
-				))}
+				);
+				})}
 			</div>
 
 			{section.examples && section.examples.length > 0 && (
@@ -769,7 +974,7 @@ export default function ApiDocsRoute() {
 						endpoint.path,
 						endpoint.title,
 						endpoint.description,
-						endpoint.auth,
+						...Object.values(getEndpointAccess(endpoint)),
 						...(endpoint.headers || []),
 						...(endpoint.body || []),
 						...(endpoint.query || []),
@@ -783,7 +988,7 @@ export default function ApiDocsRoute() {
 	return (
 		<div className="min-h-screen bg-kumo-recessed">
 			<div className="mx-auto max-w-7xl px-4 py-8 md:px-6 md:py-12">
-				<div className="mb-8 flex items-start justify-between gap-4">
+				<div className="mb-8 flex flex-col items-start justify-between gap-4 md:flex-row">
 					<div className="max-w-3xl">
 						<Button variant="ghost" size="sm" icon={<ArrowLeftIcon size={16} />} onClick={() => navigate("/")}>
 							Back
@@ -803,7 +1008,7 @@ export default function ApiDocsRoute() {
 					<div className="w-full max-w-sm">
 						<Input
 							label="Search APIs"
-							placeholder="Search by path, auth mode, or field"
+							placeholder="Search by path, scope, auth mode, or field"
 							value={search}
 							onChange={(e) => setSearch(e.target.value)}
 						/>
@@ -826,7 +1031,7 @@ export default function ApiDocsRoute() {
 						</nav>
 					</aside>
 
-					<div className="space-y-6">
+					<div className="min-w-0 space-y-6">
 						{isLoading ? (
 							<div className="flex justify-center py-20"><Loader size="lg" /></div>
 						) : filteredSections.length > 0 ? (
